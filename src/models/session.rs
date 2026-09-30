@@ -149,17 +149,28 @@ pub enum Validity {
 	TimedOut,
 }
 
+/// The session's authentication methods, read in the same statement as the session: two arrays in
+/// one order (the rows' own), rather than a second query per session read.
+const AMR_COLUMNS: &str = "array(select c.authentication_method from mfa_amr_claims c where c.session_id = sessions.id order by c.ctid) as amr_methods, 	array(select c.updated_at from mfa_amr_claims c where c.session_id = sessions.id order by c.ctid) as amr_times";
+
+fn with_amr(row: &Row) -> Session {
+	let mut s = Session::from_row(row);
+	let methods: Vec<String> = row.get("amr_methods");
+	let times: Vec<OffsetDateTime> = row.get("amr_times");
+	s.amr = methods
+		.into_iter()
+		.zip(times)
+		.map(|(method, updated_at)| AmrClaim { method, updated_at })
+		.collect();
+	s
+}
+
 pub async fn by_id<C: GenericClient>(
 	db: &C,
 	id: Uuid,
 ) -> Result<Option<Session>, tokio_postgres::Error> {
-	let sql = format!("select {COLUMNS} from sessions where id = $1 limit 1");
-	let Some(row) = db.q_opt(&sql, &[&id]).await? else {
-		return Ok(None);
-	};
-	let mut s = Session::from_row(&row);
-	s.amr = amr_for(db, s.id).await?;
-	Ok(Some(s))
+	let sql = format!("select {COLUMNS}, {AMR_COLUMNS} from sessions where id = $1 limit 1");
+	Ok(db.q_opt(&sql, &[&id]).await?.as_ref().map(with_amr))
 }
 
 /// By id, locked for this transaction; `None` when another transaction holds it.
@@ -167,14 +178,10 @@ pub async fn by_id_for_update<C: GenericClient>(
 	db: &C,
 	id: Uuid,
 ) -> Result<Option<Session>, tokio_postgres::Error> {
-	let sql =
-		format!("select {COLUMNS} from sessions where id = $1 limit 1 for update skip locked");
-	let Some(row) = db.q_opt(&sql, &[&id]).await? else {
-		return Ok(None);
-	};
-	let mut s = Session::from_row(&row);
-	s.amr = amr_for(db, s.id).await?;
-	Ok(Some(s))
+	let sql = format!(
+		"select {COLUMNS}, {AMR_COLUMNS} from sessions where id = $1 limit 1 for update skip locked"
+	);
+	Ok(db.q_opt(&sql, &[&id]).await?.as_ref().map(with_amr))
 }
 
 pub async fn for_user<C: GenericClient>(
@@ -187,25 +194,6 @@ pub async fn for_user<C: GenericClient>(
 		.await?
 		.iter()
 		.map(Session::from_row)
-		.collect())
-}
-
-async fn amr_for<C: GenericClient>(
-	db: &C,
-	session_id: Uuid,
-) -> Result<Vec<AmrClaim>, tokio_postgres::Error> {
-	let rows = db
-		.q(
-			"select authentication_method, updated_at from mfa_amr_claims where session_id = $1",
-			&[&session_id],
-		)
-		.await?;
-	Ok(rows
-		.iter()
-		.map(|r| AmrClaim {
-			method: r.get(0),
-			updated_at: r.get(1),
-		})
 		.collect())
 }
 
@@ -472,6 +460,60 @@ pub async fn revoke<C: GenericClient>(
 	.await?;
 	t.revoked = true;
 	t.updated_at = now;
+	Ok(())
+}
+
+/// Revoke `t` and issue its successor in the same session, in one statement: a refresh.
+pub async fn revoke_and_issue<C: GenericClient>(
+	db: &C,
+	t: &mut RefreshToken,
+	user_id: Uuid,
+	session_id: Uuid,
+) -> Result<RefreshToken, tokio_postgres::Error> {
+	let token = crate::crypto::secure_alphanumeric(12);
+	let now = crate::json::now();
+	let sql = format!(
+		"with revoked as (update refresh_tokens set revoked = true, updated_at = $1 where id = $2) 		 insert into refresh_tokens (instance_id, token, user_id, revoked, created_at, updated_at, parent, session_id) 		 values ('00000000-0000-0000-0000-000000000000', $3, $4, false, $1, $1, $5, $6) returning {RT_COLUMNS}"
+	);
+	let parent = Some(t.token.as_str()).filter(|p| !p.is_empty());
+	let row = db
+		.q_one(
+			&sql,
+			&[
+				&now,
+				&t.id,
+				&token,
+				&user_id.to_string(),
+				&parent,
+				&session_id,
+			],
+		)
+		.await?;
+	t.revoked = true;
+	t.updated_at = now;
+	Ok(RefreshToken::from_row(&row).expect("the row just written"))
+}
+
+/// A refresh's last writes: the session's refresh time and client, and its user's row touched the
+/// way every refresh touches it (`last_sign_in_at` written back as it is, `updated_at` now), in one
+/// statement. That row is the lock two refreshes of one person share, so it is taken last.
+pub async fn update_refresh_info_and_user<C: GenericClient>(
+	db: &C,
+	id: Uuid,
+	user_agent: &str,
+	ip: &str,
+	user: &mut super::user::User,
+) -> Result<(), tokio_postgres::Error> {
+	let now = crate::json::now();
+	let refreshed = time::PrimitiveDateTime::new(now.date(), now.time());
+	let ua = Some(user_agent).filter(|s| !s.is_empty());
+	let ip = Some(ip).filter(|s| !s.is_empty() && s.parse::<std::net::IpAddr>().is_ok());
+	db.exec(
+		"with s as (update sessions set refreshed_at = $1, user_agent = $2, ip = $3::text::inet, updated_at = $4 where id = $5) 		 update users set last_sign_in_at = $6, updated_at = $4 where id = $7",
+		&[&refreshed, &ua, &ip, &now, &id, &user.last_sign_in_at, &user.id],
+	)
+	.await?;
+	user.updated_at = now;
 	Ok(())
 }
 
