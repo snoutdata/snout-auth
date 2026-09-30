@@ -332,6 +332,61 @@ pub async fn audit<C: GenericClient>(
 	ip: &str,
 	traits: Option<Map<String, Value>>,
 ) -> Result<(), tokio_postgres::Error> {
+	let text = payload_text(
+		actor_id,
+		actor_username,
+		actor_via_sso,
+		actor_name,
+		action,
+		traits,
+	);
+	let ip: String = ip.chars().take(64).collect();
+	db.exec(
+		"insert into audit_log_entries (instance_id, id, payload, created_at, ip_address) values ('00000000-0000-0000-0000-000000000000', $1, $2::text::json, $3, $4)",
+		&[&Uuid::new_v4(), &text, &crate::json::now(), &ip],
+	)
+	.await?;
+	Ok(())
+}
+
+/// Two entries for one actor, in this order, in one statement (a refresh writes two).
+pub async fn audit_pair<C: GenericClient>(
+	db: &C,
+	actor_id: Uuid,
+	actor_username: &str,
+	actor_via_sso: bool,
+	actor_name: Option<&Value>,
+	actions: [&str; 2],
+	ip: &str,
+) -> Result<(), tokio_postgres::Error> {
+	let [a, b] = actions.map(|action| {
+		payload_text(
+			actor_id,
+			actor_username,
+			actor_via_sso,
+			actor_name,
+			action,
+			None,
+		)
+	});
+	let ip: String = ip.chars().take(64).collect();
+	let now = crate::json::now();
+	db.exec(
+		"insert into audit_log_entries (instance_id, id, payload, created_at, ip_address) values 		 ('00000000-0000-0000-0000-000000000000', $1, $2::text::json, $5, $6), 		 ('00000000-0000-0000-0000-000000000000', $3, $4::text::json, $5, $6)",
+		&[&Uuid::new_v4(), &a, &Uuid::new_v4(), &b, &now, &ip],
+	)
+	.await?;
+	Ok(())
+}
+
+fn payload_text(
+	actor_id: Uuid,
+	actor_username: &str,
+	actor_via_sso: bool,
+	actor_name: Option<&Value>,
+	action: &str,
+	traits: Option<Map<String, Value>>,
+) -> String {
 	let mut payload = Map::new();
 	payload.insert("action".into(), json!(action));
 	payload.insert("actor_id".into(), json!(actor_id));
@@ -345,12 +400,5 @@ pub async fn audit<C: GenericClient>(
 		payload.insert("traits".into(), crate::json::sorted(Value::Object(t)));
 	}
 	let payload = crate::json::sorted(Value::Object(payload));
-	let text = serde_json::to_string(&payload).unwrap_or_default();
-	let ip: String = ip.chars().take(64).collect();
-	db.exec(
-		"insert into audit_log_entries (instance_id, id, payload, created_at, ip_address) values ('00000000-0000-0000-0000-000000000000', $1, $2::text::json, $3, $4)",
-		&[&Uuid::new_v4(), &text, &crate::json::now(), &ip],
-	)
-	.await?;
-	Ok(())
+	serde_json::to_string(&payload).unwrap_or_default()
 }

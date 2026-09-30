@@ -451,19 +451,12 @@ async fn refresh(app: &App, req: &Req) -> ApiResult<Response> {
 						t
 					}
 					None => {
-						// Four writes that depend on nothing but what is already read: sent together,
-						// in this order, on one connection, and answered together.
-						let parent = rt.token.clone();
-						let (_, _, _, new) = tokio::try_join!(
-							audit(&tx, &u, "token_refreshed", req, None),
-							audit(&tx, &u, "token_revoked", req, None),
+						// The two audit entries, and the token revoked with its successor issued: two
+						// statements that depend on nothing but what is already read, sent together.
+						let (_, new) = tokio::try_join!(
+							audit_pair(&tx, &u, ["token_refreshed", "token_revoked"], req),
 							async {
-								session::revoke(&tx, &mut rt)
-									.await
-									.map_err(db("Database error revoking token"))
-							},
-							async {
-								session::insert_token(&tx, u.id, sess.id, Some(&parent))
+								session::revoke_and_issue(&tx, &mut rt, u.id, sess.id)
 									.await
 									.map_err(db("Database error granting user"))
 							},
@@ -548,21 +541,15 @@ async fn refresh(app: &App, req: &Req) -> ApiResult<Response> {
 		let (access, expires_at) = access_token_for(app, &u, &sess);
 		let ua = req.header("user-agent").to_string();
 		let ip = req.ip();
-		tokio::try_join!(
-			async {
-				session::update_refresh_info(&tx, sess.id, &ua, &ip)
-					.await
-					.map_err(db("failed to update session information"))
-			},
-			async {
-				if touch_user {
-					user::update(&tx, &mut u, &["last_sign_in_at"])
-						.await
-						.map_err(db("Database error granting user"))?;
-				}
-				Ok::<(), ApiError>(())
-			},
-		)?;
+		if touch_user {
+			session::update_refresh_info_and_user(&tx, sess.id, &ua, &ip, &mut u)
+				.await
+				.map_err(db("Database error granting user"))?;
+		} else {
+			session::update_refresh_info(&tx, sess.id, &ua, &ip)
+				.await
+				.map_err(db("failed to update session information"))?;
+		}
 		tx.commit().await.map_err(db("Database error refreshing"))?;
 		let body = token_response(&access, expires_at, &issued, &u);
 		return Ok(with_headers(crate::json::ok(&body), headers));
@@ -766,14 +753,8 @@ pub fn traits(pairs: &[(&str, &str)]) -> Map<String, Value> {
 		.collect()
 }
 
-/// One audit entry for `u`, with the caller's address.
-pub async fn audit<C: GenericClient>(
-	db_: &C,
-	u: &user::User,
-	action: &str,
-	req: &Req,
-	traits: Option<Map<String, Value>>,
-) -> ApiResult<()> {
+/// Who `u` is in an audit entry: the phone or else the email, and the full name when there is one.
+fn actor(u: &user::User) -> (String, Option<Value>) {
 	let username = if !u.phone.is_empty() {
 		u.phone.clone()
 	} else {
@@ -784,6 +765,39 @@ pub async fn audit<C: GenericClient>(
 		.as_ref()
 		.and_then(|m| m.get("full_name"))
 		.cloned();
+	(username, name)
+}
+
+/// Two audit entries for `u`, in this order, in one statement.
+async fn audit_pair<C: GenericClient>(
+	db_: &C,
+	u: &user::User,
+	actions: [&str; 2],
+	req: &Req,
+) -> ApiResult<()> {
+	let (username, name) = actor(u);
+	tok::audit_pair(
+		db_,
+		u.id,
+		&username,
+		u.is_sso_user,
+		name.as_ref(),
+		actions,
+		&req.ip(),
+	)
+	.await
+	.map_err(db("Database error creating audit log entry"))
+}
+
+/// One audit entry for `u`, with the caller's address.
+pub async fn audit<C: GenericClient>(
+	db_: &C,
+	u: &user::User,
+	action: &str,
+	req: &Req,
+	traits: Option<Map<String, Value>>,
+) -> ApiResult<()> {
+	let (username, name) = actor(u);
 	tok::audit(
 		db_,
 		u.id,
