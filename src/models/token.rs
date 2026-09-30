@@ -50,6 +50,21 @@ pub async fn clear_all<C: GenericClient>(
 	Ok(())
 }
 
+/// Delete a user's one-time tokens of these types.
+pub async fn delete_types<C: GenericClient>(
+	db: &C,
+	user_id: Uuid,
+	types: &[&str],
+) -> Result<(), tokio_postgres::Error> {
+	let types: Vec<String> = types.iter().map(|t| t.to_string()).collect();
+	db.exec(
+		"delete from one_time_tokens where user_id = $1 and token_type::text = any($2)",
+		&[&user_id, &types],
+	)
+	.await?;
+	Ok(())
+}
+
 /// The user a token belongs to, by its hash, among the given types.
 pub async fn find_user_id<C: GenericClient>(
 	db: &C,

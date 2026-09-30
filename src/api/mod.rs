@@ -42,6 +42,7 @@ pub struct App {
 	pub http: reqwest::Client,
 	pub saml: Option<saml::ServiceProvider>,
 	pub oidc: crate::oidc::Cache,
+	pub otp_guesses: crate::ratelimit::OtpGuesses,
 }
 
 pub type Shared = State<Arc<App>>;

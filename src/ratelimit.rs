@@ -112,3 +112,57 @@ mod tests {
 		assert!(l.allow("b"));
 	}
 }
+
+/// Wrong guesses at a user's emailed one-time code (upstream #2819). A six-digit code limited only
+/// per address can be guessed from many addresses; counted per user and per code it cannot. The
+/// count belongs to the code the user was last sent (`sent` is when), so a new code starts at zero.
+/// One process serves a project, so memory is the whole count; a restart forgives what it held.
+#[derive(Default)]
+pub struct OtpGuesses {
+	counts: Mutex<HashMap<uuid::Uuid, (i128, u32)>>,
+}
+
+/// How many wrong guesses spend a code.
+pub const OTP_GUESSES: u32 = 5;
+
+impl OtpGuesses {
+	/// One more wrong guess at the code `user` was sent at `sent` (unix nanoseconds); how many now.
+	pub fn wrong(&self, user: uuid::Uuid, sent: i128) -> u32 {
+		let mut counts = self.counts.lock().unwrap_or_else(|p| p.into_inner());
+		// Bounded: past this many users guessing at once, the oldest counts are forgiven wholesale
+		// rather than letting the map grow without end.
+		if counts.len() >= 100_000 && !counts.contains_key(&user) {
+			counts.clear();
+		}
+		let entry = counts.entry(user).or_insert((sent, 0));
+		if entry.0 != sent {
+			*entry = (sent, 0);
+		}
+		entry.1 += 1;
+		entry.1
+	}
+
+	/// The code was spent or replaced: its count goes with it.
+	pub fn forget(&self, user: uuid::Uuid) {
+		self.counts
+			.lock()
+			.unwrap_or_else(|p| p.into_inner())
+			.remove(&user);
+	}
+}
+
+#[cfg(test)]
+mod otp_tests {
+	use super::*;
+
+	#[test]
+	fn a_new_code_starts_again() {
+		let g = OtpGuesses::default();
+		let u = uuid::Uuid::new_v4();
+		assert_eq!(g.wrong(u, 1), 1);
+		assert_eq!(g.wrong(u, 1), 2);
+		assert_eq!(g.wrong(u, 2), 1);
+		g.forget(u);
+		assert_eq!(g.wrong(u, 2), 1);
+	}
+}

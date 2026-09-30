@@ -11,7 +11,8 @@ server of the same API are read as they are.
 
 - **Passwords, links and codes.** Email and password, confirmation, recovery, magic links and
   one-time codes, email change (with the secure two-address flow), invites, reauthentication, and
-  PKCE for every link and redirect.
+  PKCE for every link and redirect. An emailed code is spent after five wrong guesses, from any
+  address, and the user asks for a new one.
 - **Sessions that refresh safely.** Short-lived HS256 access tokens, refresh tokens that rotate
   with a reuse window, and sessions that can be time-boxed, expired on inactivity, or limited to
   one per user.
