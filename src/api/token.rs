@@ -273,26 +273,31 @@ async fn find_by_refresh<C: GenericClient>(
 		else {
 			return Ok(None);
 		};
-		let Some(u) = user::by_id(conn, rt.user_id)
-			.await
-			.map_err(db("error finding user"))?
-		else {
+		// The user and the session both hang off the token and not off each other: one round trip.
+		let sid = rt.session_id.filter(|s| !s.is_nil());
+		let (u, sess) = tokio::try_join!(
+			async {
+				user::by_id(conn, rt.user_id)
+					.await
+					.map_err(db("error finding user"))
+			},
+			async {
+				match sid {
+					Some(sid) if lock => session::by_id_for_update(conn, sid)
+						.await
+						.map_err(db("error finding session")),
+					Some(sid) => session::by_id(conn, sid)
+						.await
+						.map_err(db("error finding session")),
+					None => Ok(None),
+				}
+			},
+		)?;
+		let Some(u) = u else {
 			return Ok(None);
 		};
-		let mut sess = None;
-		if let Some(sid) = rt.session_id.filter(|s| !s.is_nil()) {
-			sess = if lock {
-				session::by_id_for_update(conn, sid)
-					.await
-					.map_err(db("error finding session"))?
-			} else {
-				session::by_id(conn, sid)
-					.await
-					.map_err(db("error finding session"))?
-			};
-			if sess.is_none() && lock {
-				return Ok(None);
-			}
+		if sid.is_some() && sess.is_none() && lock {
+			return Ok(None);
 		}
 		return Ok(Some((u, Presented::Stored(rt), sess)));
 	}
@@ -362,69 +367,51 @@ async fn refresh(app: &App, req: &Req) -> ApiResult<Response> {
 			));
 		}
 		let mut conn = app.pool.get().await.map_err(super::pool_error)?;
-		let Some((u, presented, sess)) = find_by_refresh(&conn, &token, false).await? else {
-			return Err(refresh_error(
-				"refresh_token_not_found",
-				"Invalid Refresh Token: Refresh Token Not Found",
-			));
-		};
-		set(&mut headers, "sb-auth-user-id", &u.id.to_string());
-		if u.is_banned() {
-			return Err(refresh_error(
-				"user_banned",
-				"Invalid Refresh Token: User Banned",
-			));
-		}
-		let Some(sess) = sess else {
-			if let Presented::Stored(rt) = &presented {
-				session::delete_token(&conn, rt.id)
-					.await
-					.map_err(db("Error deleting refresh token with missing session"))?;
-			}
-			return Err(refresh_error(
-				"session_not_found",
-				"Invalid Refresh Token: No Valid Session Found",
-			));
-		};
-		set(&mut headers, "sb-auth-session-id", &sess.id.to_string());
-		let token_time = match &presented {
-			Presented::Stored(rt) => Some(rt.updated_at),
-			Presented::Signed(_) => None,
-		};
-		match sess.validity(cfg, start_time, token_time, u.highest_aal()) {
-			session::Validity::Valid => {}
-			session::Validity::TimedOut => {
-				return Err(refresh_error(
-					"session_expired",
-					"Invalid Refresh Token: Session Expired (Inactivity)",
-				));
-			}
-			_ => {
-				return Err(refresh_error(
-					"session_expired",
-					"Invalid Refresh Token: Session Expired",
-				));
-			}
-		}
-
 		let tx = conn
 			.transaction()
 			.await
 			.map_err(db("Database error refreshing"))?;
-		let Some((mut u, presented, sess)) = find_by_refresh(&tx, &token, true).await? else {
-			// Found a moment ago and not now: another refresh holds the rows. Try again shortly.
+		// The common case reads once, locked. Nothing locked comes back when the token is unknown,
+		// its session is gone, or another refresh holds the rows; the unlocked read below tells
+		// those apart and refuses each exactly as it would have been refused before the lock.
+		let locked = match find_by_refresh(&tx, &token, true).await? {
+			Some((u, presented, Some(sess))) => Some((u, presented, sess)),
+			_ => None,
+		};
+		let Some((mut u, presented, sess)) = locked else {
 			drop(tx);
+			let Some((u, presented, sess)) = find_by_refresh(&conn, &token, false).await? else {
+				return Err(refresh_error(
+					"refresh_token_not_found",
+					"Invalid Refresh Token: Refresh Token Not Found",
+				));
+			};
+			vet_user(&u, &mut headers)?;
+			let Some(sess) = sess else {
+				if let Presented::Stored(rt) = &presented {
+					session::delete_token(&conn, rt.id)
+						.await
+						.map_err(db("Error deleting refresh token with missing session"))?;
+				}
+				return Err(refresh_error(
+					"session_not_found",
+					"Invalid Refresh Token: No Valid Session Found",
+				));
+			};
+			vet_session(cfg, start_time, &u, &presented, &sess, &mut headers)?;
+			// Found, valid, and held by another refresh. Try again shortly.
 			drop(conn);
 			tokio::time::sleep(Duration::from_millis(10 + rand::random::<u64>() % 20)).await;
 			continue;
 		};
-		let Some(sess) = sess else {
-			return Err(refresh_error(
-				"session_not_found",
-				"Invalid Refresh Token: No Valid Session Found",
-			));
-		};
+		vet_user(&u, &mut headers)?;
+		vet_session(cfg, start_time, &u, &presented, &sess, &mut headers)?;
+
 		let issued: String;
+		// Whether this refresh writes the user row. That row is the one lock a refresh shares with
+		// every other refresh of the same person (one per device), so it is written last, beside
+		// the session's own row, and held for no more than that write and the commit.
+		let mut touch_user = false;
 		match presented {
 			Presented::Stored(mut rt) => {
 				let mut reuse = None;
@@ -458,20 +445,30 @@ async fn refresh(app: &App, req: &Req) -> ApiResult<Response> {
 						}
 					}
 				}
-				audit(&tx, &u, "token_refreshed", req, None).await?;
 				issued = match reuse {
-					Some(t) => t,
+					Some(t) => {
+						audit(&tx, &u, "token_refreshed", req, None).await?;
+						t
+					}
 					None => {
-						audit(&tx, &u, "token_revoked", req, None).await?;
-						session::revoke(&tx, &mut rt)
-							.await
-							.map_err(db("Database error revoking token"))?;
-						let new = session::insert_token(&tx, u.id, sess.id, Some(&rt.token))
-							.await
-							.map_err(db("Database error granting user"))?;
-						user::update(&tx, &mut u, &["last_sign_in_at"])
-							.await
-							.map_err(db("Database error granting user"))?;
+						// Four writes that depend on nothing but what is already read: sent together,
+						// in this order, on one connection, and answered together.
+						let parent = rt.token.clone();
+						let (_, _, _, new) = tokio::try_join!(
+							audit(&tx, &u, "token_refreshed", req, None),
+							audit(&tx, &u, "token_revoked", req, None),
+							async {
+								session::revoke(&tx, &mut rt)
+									.await
+									.map_err(db("Database error revoking token"))
+							},
+							async {
+								session::insert_token(&tx, u.id, sess.id, Some(&parent))
+									.await
+									.map_err(db("Database error granting user"))
+							},
+						)?;
+						touch_user = true;
 						set(&mut headers, "sb-auth-refresh-token-reuse", "false");
 						new.token
 					}
@@ -532,24 +529,82 @@ async fn refresh(app: &App, req: &Req) -> ApiResult<Response> {
 					}
 				}
 				issued = SignedRefreshToken::encode(sess.id, counter, &key);
-				session::set_counter(&tx, sess.id, counter)
-					.await
-					.map_err(db("failed saving session"))?;
+				tokio::try_join!(
+					async {
+						session::set_counter(&tx, sess.id, counter)
+							.await
+							.map_err(db("failed saving session"))
+					},
+					audit(&tx, &u, "token_refreshed", req, None),
+				)?;
 				set(
 					&mut headers,
 					"sb-auth-refresh-token-counter",
 					&counter.to_string(),
 				);
-				audit(&tx, &u, "token_refreshed", req, None).await?;
 			}
 		}
-		let (access, expires_at) = access_token(app, &tx, &u, sess.id).await?;
-		session::update_refresh_info(&tx, sess.id, req.header("user-agent"), &req.ip())
-			.await
-			.map_err(db("failed to update session information"))?;
+		// The session read under the lock is the one the token is for; its claims have not moved.
+		let (access, expires_at) = access_token_for(app, &u, &sess);
+		let ua = req.header("user-agent").to_string();
+		let ip = req.ip();
+		tokio::try_join!(
+			async {
+				session::update_refresh_info(&tx, sess.id, &ua, &ip)
+					.await
+					.map_err(db("failed to update session information"))
+			},
+			async {
+				if touch_user {
+					user::update(&tx, &mut u, &["last_sign_in_at"])
+						.await
+						.map_err(db("Database error granting user"))?;
+				}
+				Ok::<(), ApiError>(())
+			},
+		)?;
 		tx.commit().await.map_err(db("Database error refreshing"))?;
 		let body = token_response(&access, expires_at, &issued, &u);
 		return Ok(with_headers(crate::json::ok(&body), headers));
+	}
+}
+
+/// A refresh for a banned user is refused, and says whose it was.
+fn vet_user(u: &user::User, headers: &mut HeaderMap) -> ApiResult<()> {
+	set(headers, "sb-auth-user-id", &u.id.to_string());
+	if u.is_banned() {
+		return Err(refresh_error(
+			"user_banned",
+			"Invalid Refresh Token: User Banned",
+		));
+	}
+	Ok(())
+}
+
+/// A refresh of a session past its inactivity limit or its lifetime is refused.
+fn vet_session(
+	cfg: &crate::config::Config,
+	start_time: OffsetDateTime,
+	u: &user::User,
+	presented: &Presented,
+	sess: &session::Session,
+	headers: &mut HeaderMap,
+) -> ApiResult<()> {
+	set(headers, "sb-auth-session-id", &sess.id.to_string());
+	let token_time = match presented {
+		Presented::Stored(rt) => Some(rt.updated_at),
+		Presented::Signed(_) => None,
+	};
+	match sess.validity(cfg, start_time, token_time, u.highest_aal()) {
+		session::Validity::Valid => Ok(()),
+		session::Validity::TimedOut => Err(refresh_error(
+			"session_expired",
+			"Invalid Refresh Token: Session Expired (Inactivity)",
+		)),
+		_ => Err(refresh_error(
+			"session_expired",
+			"Invalid Refresh Token: Session Expired",
+		)),
 	}
 }
 
@@ -614,11 +669,17 @@ pub async fn access_token<C: GenericClient>(
 	u: &user::User,
 	session_id: Uuid,
 ) -> ApiResult<(String, i64)> {
-	let cfg = &app.config;
 	let sess = session::by_id(tx, session_id)
 		.await
 		.map_err(db("Database error finding session"))?
 		.ok_or_else(|| ApiError::internal("Session is required to issue access token"))?;
+	Ok(access_token_for(app, u, &sess))
+}
+
+/// An access token for `u` in a session already read, and when it expires.
+pub fn access_token_for(app: &App, u: &user::User, sess: &session::Session) -> (String, i64) {
+	let cfg = &app.config;
+	let session_id = sess.id;
 	let (aal, amr) = sess.aal_and_amr(u);
 	let now = OffsetDateTime::now_utc().unix_timestamp();
 	let exp = now + cfg.jwt_exp;
@@ -638,7 +699,7 @@ pub async fn access_token<C: GenericClient>(
 		&session_id.to_string(),
 		u.is_anonymous,
 	);
-	Ok((crate::jwt::sign(&claims, &cfg.jwt_secret), exp))
+	(crate::jwt::sign(&claims, &cfg.jwt_secret), exp)
 }
 
 pub fn token_response(access: &str, expires_at: i64, refresh: &str, u: &user::User) -> Value {
