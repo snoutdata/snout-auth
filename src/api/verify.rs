@@ -107,7 +107,7 @@ async fn by_email_and_code<C: GenericClient>(
 	tx: &C,
 	p: &mut Params,
 	aud: &str,
-) -> ApiResult<User> {
+) -> ApiResult<Guess> {
 	let invalid = || ApiError::forbidden("otp_expired", "Token has expired or is invalid");
 	let found = if p.kind == "email_change" {
 		let mut found = None;
@@ -181,9 +181,66 @@ async fn by_email_and_code<C: GenericClient>(
 		_ => false,
 	};
 	if !valid {
+		let sent = [
+			u.confirmation_sent_at,
+			u.recovery_sent_at,
+			u.email_change_sent_at,
+		]
+		.into_iter()
+		.flatten()
+		.map(|t| t.unix_timestamp_nanos())
+		.max()
+		.unwrap_or(0);
+		if app.otp_guesses.wrong(u.id, sent) >= crate::ratelimit::OTP_GUESSES {
+			// The fifth wrong guess spends the codes this kind of verification accepts: the user
+			// asks for a new one, and until then every guess, right or wrong, gets the answer an
+			// expired code gets. No new error for an application to learn (upstream #2819).
+			spend(tx, u, &p.kind).await?;
+			return Ok(Guess::Spent);
+		}
 		return Err(invalid().with_internal("token has expired or is invalid"));
 	}
-	Ok(u)
+	app.otp_guesses.forget(u.id);
+	Ok(Guess::Right(Box::new(u)))
+}
+
+/// What a guess at an emailed code came to: the user whose code it was, or that code spent by one
+/// wrong guess too many (a write the caller commits before it refuses).
+enum Guess {
+	Right(Box<User>),
+	Spent,
+}
+
+/// Clear the codes `kind` accepts, in the user row and in `one_time_tokens`.
+async fn spend<C: GenericClient>(tx: &C, mut u: User, kind: &str) -> ApiResult<()> {
+	let (columns, types): (&[&str], &[&str]) = match kind {
+		"email" => (
+			&["confirmation_token", "recovery_token"],
+			&[tok::CONFIRMATION, tok::RECOVERY],
+		),
+		"signup" | "invite" => (&["confirmation_token"], &[tok::CONFIRMATION]),
+		"recovery" | "magiclink" => (&["recovery_token"], &[tok::RECOVERY]),
+		"email_change" => (
+			&["email_change_token_current", "email_change_token_new"],
+			&[tok::EMAIL_CHANGE_CURRENT, tok::EMAIL_CHANGE_NEW],
+		),
+		_ => return Ok(()),
+	};
+	for c in columns {
+		match *c {
+			"confirmation_token" => u.confirmation_token.clear(),
+			"recovery_token" => u.recovery_token.clear(),
+			"email_change_token_current" => u.email_change_token_current.clear(),
+			_ => u.email_change_token_new.clear(),
+		}
+	}
+	user::update(tx, &mut u, columns)
+		.await
+		.map_err(db("Database error updating user"))?;
+	tok::delete_types(tx, u.id, types)
+		.await
+		.map_err(db("Database error updating user"))?;
+	Ok(())
 }
 
 // ------------------------------------------------------------------------------------------
@@ -553,7 +610,16 @@ async fn verify_code(app: &App, req: &Req) -> ApiResult<Response> {
 	let mut u = if using_hash {
 		by_token_hash(app, &tx, &mut p).await?
 	} else {
-		by_email_and_code(app, &tx, &mut p, &aud).await?
+		match by_email_and_code(app, &tx, &mut p, &aud).await? {
+			Guess::Right(u) => *u,
+			Guess::Spent => {
+				tx.commit().await.map_err(db("Database error"))?;
+				return Err(ApiError::forbidden(
+					"otp_expired",
+					"Token has expired or is invalid",
+				));
+			}
+		}
 	};
 	if matches!(p.kind.as_str(), "sms" | "phone_change") {
 		return Err(ApiError::bad_request(
