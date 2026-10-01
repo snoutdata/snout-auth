@@ -17,7 +17,7 @@ COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certifica
 COPY --from=build /snout-auth /snout-auth
 USER 1000:1000
 EXPOSE 9999
-# How SnoutData Desktop's "Find databases" knows this container is part of the SnoutData stack
+# How SnoutData Studio's "Find databases" knows this container is part of the SnoutData stack
 # (docs/desktop/DISCOVERY.md): by label, never by guessing from the image name. Only the
 # `postgres` component is offered as a database; the rest are recognised and left out.
 LABEL com.snoutdata.stack="1" com.snoutdata.component="auth"
