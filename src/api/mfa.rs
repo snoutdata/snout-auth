@@ -524,11 +524,12 @@ mod tests {
 	#[test]
 	fn a_valid_code_says_which_time_step_it_belongs_to() {
 		// The step is what a second use of the same code is refused by (D19).
-		let secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"; // b"12345678901234567890"
+		// RFC 6238's secret, as an enrolment stores it.
+		let secret = BASE32_NOPAD.encode(b"12345678901234567890");
 		let at = OffsetDateTime::from_unix_timestamp(59).unwrap();
-		assert_eq!(totp_step(secret, "287082", at), Some(1));
-		assert_eq!(totp_step(secret, "000000", at), None);
-		assert!(totp_valid(secret, "287082", at));
+		assert_eq!(totp_step(&secret, "287082", at), Some(1));
+		assert_eq!(totp_step(&secret, "000000", at), None);
+		assert!(totp_valid(&secret, "287082", at));
 	}
 
 	#[test]
