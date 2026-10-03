@@ -241,17 +241,44 @@ pub async fn challenge_by_id<C: GenericClient>(
 }
 
 /// Mark a challenge verified; false when another request already has (one code, one session).
+/// The TOTP time step the code belonged to is kept in `otp_code`, which upstream fills only for a
+/// phone factor, so a later challenge can refuse the same code (`totp_step_used`).
 pub async fn verify_challenge<C: GenericClient>(
 	db: &C,
 	id: Uuid,
+	step: u64,
 ) -> Result<bool, tokio_postgres::Error> {
 	let n = db
 		.exec(
-			"update mfa_challenges set verified_at = $1 where id = $2 and verified_at is null",
-			&[&crate::json::now(), &id],
+			"update mfa_challenges set verified_at = $1, otp_code = $3 where id = $2 and verified_at is null",
+			&[&crate::json::now(), &id, &format!("{TOTP_STEP_PREFIX}{step}")],
 		)
 		.await?;
 	Ok(n == 1)
+}
+
+const TOTP_STEP_PREFIX: &str = "totp-step:";
+
+/// Whether this factor has already accepted a code from this time step or a later one (RFC 6238
+/// §5.2: a code that was accepted once is not accepted again). Locks the factor's row for the rest
+/// of the transaction, so two challenges verifying the same code at once are serialised.
+pub async fn totp_step_used<C: GenericClient>(
+	db: &C,
+	factor_id: Uuid,
+	step: u64,
+) -> Result<bool, tokio_postgres::Error> {
+	db.q_opt(
+		"select 1 from mfa_factors where id = $1 for update",
+		&[&factor_id],
+	)
+	.await?;
+	let row = db
+		.q_one(
+			"select exists (select 1 from mfa_challenges where factor_id = $1 and verified_at is not null \n			 and otp_code like 'totp-step:%' and substr(otp_code, 11)::bigint >= $2)",
+			&[&factor_id, &(step as i64)],
+		)
+		.await?;
+	Ok(row.get(0))
 }
 
 pub async fn delete_challenge<C: GenericClient>(
