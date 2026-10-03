@@ -38,21 +38,26 @@ fn totp_code(secret: &[u8], counter: u64) -> String {
 
 /// A six-digit code for this secret, in the current 30-second window or the one either side.
 pub fn totp_valid(secret_b32: &str, code: &str, at: OffsetDateTime) -> bool {
+	totp_step(secret_b32, code, at).is_some()
+}
+
+/// The time step a valid code belongs to (the current one, or one either side for clock drift).
+pub fn totp_step(secret_b32: &str, code: &str, at: OffsetDateTime) -> Option<u64> {
 	let Ok(secret) = BASE32_NOPAD.decode(
 		secret_b32
 			.trim_end_matches('=')
 			.to_ascii_uppercase()
 			.as_bytes(),
 	) else {
-		return false;
+		return None;
 	};
 	if code.len() != 6 || !code.bytes().all(|b| b.is_ascii_digit()) {
-		return false;
+		return None;
 	}
 	let step = (at.unix_timestamp() / 30) as u64;
 	[step.saturating_sub(1), step, step + 1]
-		.iter()
-		.any(|s| crate::crypto::constant_eq(totp_code(&secret, *s).as_bytes(), code.as_bytes()))
+		.into_iter()
+		.find(|s| crate::crypto::constant_eq(totp_code(&secret, *s).as_bytes(), code.as_bytes()))
 }
 
 fn qr_svg(uri: &str) -> String {
@@ -294,12 +299,12 @@ async fn verify_factor(app: &App, req: &Req, id: &str) -> ApiResult<Response> {
 			),
 		));
 	}
-	if !totp_valid(&f.secret, &code, OffsetDateTime::now_utc()) {
+	let Some(step) = totp_step(&f.secret, &code, OffsetDateTime::now_utc()) else {
 		return Err(ApiError::unprocessable(
 			"mfa_verification_failed",
 			"Invalid TOTP code entered",
 		));
-	}
+	};
 
 	let tx = conn.transaction().await.map_err(db("Database error"))?;
 	let mut t = Map::new();
@@ -307,7 +312,18 @@ async fn verify_factor(app: &App, req: &Req, id: &str) -> ApiResult<Response> {
 	t.insert("challenge_id".into(), json!(ch.id));
 	t.insert("factor_type".into(), json!(f.factor_type));
 	audit(&tx, &caller.user, "verification_attempted", req, Some(t)).await?;
-	if !factor::verify_challenge(&tx, ch.id)
+	// A code already accepted once is refused, on a new challenge too (RFC 6238 §5.2). Upstream
+	// accepts it again for as long as it is current (DIVERGENCES.md D19).
+	if factor::totp_step_used(&tx, f.id, step)
+		.await
+		.map_err(db("Database error"))?
+	{
+		return Err(ApiError::unprocessable(
+			"mfa_verification_rejected",
+			"This code has already been used. Wait for the next one and try again.",
+		));
+	}
+	if !factor::verify_challenge(&tx, ch.id, step)
 		.await
 		.map_err(db("Database error"))?
 	{
@@ -504,6 +520,16 @@ pub async fn downgrade_sessions<C: GenericClient>(
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn a_valid_code_says_which_time_step_it_belongs_to() {
+		// The step is what a second use of the same code is refused by (D19).
+		let secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"; // b"12345678901234567890"
+		let at = OffsetDateTime::from_unix_timestamp(59).unwrap();
+		assert_eq!(totp_step(secret, "287082", at), Some(1));
+		assert_eq!(totp_step(secret, "000000", at), None);
+		assert!(totp_valid(secret, "287082", at));
+	}
 
 	#[test]
 	fn rfc6238_vector() {
