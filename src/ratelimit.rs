@@ -76,6 +76,10 @@ pub struct Limits {
 	pub factor_verify: Limiter,
 	pub factor_challenge: Limiter,
 	pub email: GlobalLimiter,
+	/// Database device authorizations started, per caller.
+	pub database_device: Limiter,
+	/// Polls of the database token endpoint, per caller.
+	pub database_token: Limiter,
 }
 
 impl Limits {
@@ -103,6 +107,12 @@ impl Limits {
 			factor_verify: Limiter::new(cfg.rate_mfa, minute, 30.0),
 			factor_challenge: Limiter::new(cfg.rate_mfa, minute, 30.0),
 			email: GlobalLimiter::new(cfg.rate_email_sent.events, cfg.rate_email_sent.over),
+			database_device: per_5m(cfg.rate_database_device),
+			database_token: Limiter::new(
+				cfg.rate_database_token,
+				five_min,
+				cfg.rate_database_token.min(60.0),
+			),
 		}
 	}
 }
@@ -171,5 +181,60 @@ mod otp_tests {
 		assert_eq!(g.wrong(u, 2), 1);
 		g.forget(u);
 		assert_eq!(g.wrong(u, 2), 1);
+	}
+}
+
+/// Wrong user codes typed by one signed-in person (the database device grant). Counted on the
+/// APPROVER, not on a code: a guesser holds no code and tries many, so counting per code counts
+/// nothing. The interesting attack is a stranger approving somebody's pending code so that a
+/// client receives a token for the STRANGER's database access; sixty bits and this cap make
+/// that a guess with no chance of landing. One process serves a server, so memory is the count.
+#[derive(Default)]
+pub struct CodeMisses {
+	counts: Mutex<HashMap<uuid::Uuid, (Instant, u32)>>,
+}
+
+/// Wrong codes allowed in a window before a person is made to stop.
+pub const CODE_MISSES: u32 = 10;
+pub const CODE_MISS_WINDOW: Duration = Duration::from_secs(900);
+
+impl CodeMisses {
+	/// Whether this person has typed too many wrong codes lately.
+	pub fn blocked(&self, user: uuid::Uuid) -> bool {
+		let counts = self.counts.lock().unwrap_or_else(|p| p.into_inner());
+		counts
+			.get(&user)
+			.is_some_and(|(since, n)| since.elapsed() < CODE_MISS_WINDOW && *n >= CODE_MISSES)
+	}
+
+	/// One more wrong code.
+	pub fn miss(&self, user: uuid::Uuid) {
+		let mut counts = self.counts.lock().unwrap_or_else(|p| p.into_inner());
+		if counts.len() >= 100_000 && !counts.contains_key(&user) {
+			counts.retain(|_, (since, _)| since.elapsed() < CODE_MISS_WINDOW);
+		}
+		let entry = counts.entry(user).or_insert((Instant::now(), 0));
+		if entry.0.elapsed() >= CODE_MISS_WINDOW {
+			*entry = (Instant::now(), 0);
+		}
+		entry.1 += 1;
+	}
+}
+
+#[cfg(test)]
+mod miss_tests {
+	use super::*;
+
+	#[test]
+	fn ten_wrong_codes_and_a_person_stops() {
+		let m = CodeMisses::default();
+		let u = uuid::Uuid::new_v4();
+		for _ in 0..CODE_MISSES - 1 {
+			m.miss(u);
+		}
+		assert!(!m.blocked(u));
+		m.miss(u);
+		assert!(m.blocked(u));
+		assert!(!m.blocked(uuid::Uuid::new_v4()));
 	}
 }

@@ -5,6 +5,7 @@ pub mod api;
 pub mod config;
 pub mod crypto;
 pub mod db;
+pub mod dbtoken;
 pub mod dsig;
 pub mod error;
 pub mod json;

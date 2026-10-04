@@ -91,6 +91,12 @@ impl ApiError {
 			internal: None,
 		}
 	}
+	/// An OAuth-shaped error with another status (`invalid_client` is a 401, RFC 6749 §5.2).
+	pub fn oauth_with_status(status: u16, error: &str, description: impl Into<String>) -> ApiError {
+		let mut e = ApiError::oauth(error, description);
+		e.status = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_REQUEST);
+		e
+	}
 	pub fn weak_password(message: String, reasons: Vec<String>) -> ApiError {
 		ApiError {
 			status: StatusCode::UNPROCESSABLE_ENTITY,
@@ -125,7 +131,7 @@ impl ApiError {
 				if !description.is_empty() {
 					body["error_description"] = json!(description);
 				}
-				(StatusCode::BAD_REQUEST, body, None)
+				(self.status, body, None)
 			}
 			ErrorKind::WeakPassword { reasons } => {
 				if dated {

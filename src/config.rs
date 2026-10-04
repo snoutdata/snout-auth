@@ -369,6 +369,161 @@ pub struct Config {
 
 	pub cors_extra_headers: Vec<String>,
 	pub log_level: String,
+
+	/// Database tokens (Postgres 18's `oauth` sign-in, through the device grant). `None` is off,
+	/// which is the default: none of its endpoints exist and no table is made until it is on.
+	pub database_tokens: Option<DatabaseTokens>,
+	/// Device authorizations started per caller, per 5 minutes.
+	pub rate_database_device: f64,
+	/// Polls of the database token endpoint per caller, per 5 minutes.
+	pub rate_database_token: f64,
+}
+
+/// What `AUTH_DATABASE_TOKENS_*` configures. Every value here was checked at start.
+#[derive(Clone, Debug)]
+pub struct DatabaseTokens {
+	/// The issuer, exactly as every database's `pg_hba` line and every client's `oauth_issuer`
+	/// spell it: libpq compares them character for character. Also the base of every endpoint
+	/// the discovery document names, so it is this server's public address.
+	pub issuer: String,
+	pub keys: std::sync::Arc<crate::dbtoken::KeySet>,
+	/// The public clients that may ask (no secret: a CLI cannot keep one).
+	pub client_ids: Vec<String>,
+	pub lifetime: Duration,
+	/// `schema.function(uuid, text) returns text`: the role a person has on a project, or null.
+	pub access_function: String,
+	/// The page where a person types the code.
+	pub verification_uri: String,
+	pub device_code_expiry: Duration,
+	pub poll_interval: Duration,
+}
+
+impl DatabaseTokens {
+	fn read(env: &Env) -> Result<Option<DatabaseTokens>, ConfigError> {
+		if !env.bool("DATABASE_TOKENS_ENABLED", false)? {
+			return Ok(None);
+		}
+		let required = |suffix: &str, why: &str| {
+			env.opt(suffix).ok_or_else(|| {
+				err(
+					&format!("AUTH_{suffix}"),
+					format!("is required when AUTH_DATABASE_TOKENS_ENABLED is true: {why}"),
+				)
+			})
+		};
+		let issuer = required(
+			"DATABASE_TOKENS_ISSUER",
+			"the issuer URL every database's pg_hba line names",
+		)?;
+		check_url("AUTH_DATABASE_TOKENS_ISSUER", &issuer, false)?;
+		if issuer.ends_with('/') {
+			return Err(err(
+				"AUTH_DATABASE_TOKENS_ISSUER",
+				"must not end in '/': libpq compares issuers character for character",
+			));
+		}
+		let keys_text = required(
+			"DATABASE_TOKENS_KEYS",
+			"the ES256 keys database tokens are signed with",
+		)?;
+		let keys =
+			crate::dbtoken::KeySet::parse(&keys_text, env.get("DATABASE_TOKENS_SIGNING_KID"))
+				.map_err(|e| match e {
+					crate::dbtoken::KeyError::Keys(m) => err("AUTH_DATABASE_TOKENS_KEYS", m),
+					crate::dbtoken::KeyError::SigningKid(m) => {
+						err("AUTH_DATABASE_TOKENS_SIGNING_KID", m)
+					}
+				})?;
+		let client_ids = env.list("DATABASE_TOKENS_CLIENT_IDS");
+		if client_ids.is_empty() {
+			return Err(err(
+				"AUTH_DATABASE_TOKENS_CLIENT_IDS",
+				"is required when AUTH_DATABASE_TOKENS_ENABLED is true: the public client ids that may ask, comma separated (psql,snoutdata)",
+			));
+		}
+		let verification_uri = required(
+			"DATABASE_TOKENS_VERIFICATION_URI",
+			"the page where a person types the code",
+		)?;
+		// A fragment is allowed: a single-page dashboard routes by it (`/#/device`).
+		check_url(
+			"AUTH_DATABASE_TOKENS_VERIFICATION_URI",
+			&verification_uri,
+			true,
+		)?;
+		let access_function = env.string(
+			"DATABASE_TOKENS_ACCESS_FUNCTION",
+			"public.database_token_role",
+		);
+		let qualified = access_function.split_once('.').filter(|(s, f)| {
+			let ident = |x: &str| {
+				!x.is_empty()
+					&& x.len() <= 63
+					&& x.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
+					&& x.chars()
+						.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+			};
+			ident(s) && ident(f)
+		});
+		if qualified.is_none() {
+			return Err(err(
+				"AUTH_DATABASE_TOKENS_ACCESS_FUNCTION",
+				format!(
+					"{access_function:?} must be schema.function, in lowercase letters, digits and underscores"
+				),
+			));
+		}
+		let bounded = |suffix: &str, default: Duration, min: Duration, max: Duration| {
+			let d = env.duration(suffix, default)?;
+			if d < min || d > max {
+				return Err(err(
+					&format!("AUTH_{suffix}"),
+					format!("must be between {}s and {}s", min.as_secs(), max.as_secs()),
+				));
+			}
+			Ok(d)
+		};
+		Ok(Some(DatabaseTokens {
+			issuer,
+			keys: std::sync::Arc::new(keys),
+			client_ids,
+			lifetime: bounded(
+				"DATABASE_TOKENS_EXP",
+				Duration::from_secs(3600),
+				Duration::from_secs(60),
+				Duration::from_secs(86400),
+			)?,
+			access_function,
+			verification_uri,
+			device_code_expiry: bounded(
+				"DATABASE_TOKENS_DEVICE_CODE_EXPIRY",
+				Duration::from_secs(600),
+				Duration::from_secs(10),
+				Duration::from_secs(3600),
+			)?,
+			poll_interval: bounded(
+				"DATABASE_TOKENS_POLL_INTERVAL",
+				Duration::from_secs(5),
+				Duration::from_secs(1),
+				Duration::from_secs(60),
+			)?,
+		}))
+	}
+}
+
+/// An absolute http(s) URL with no query, and no fragment unless `fragment` allows one.
+fn check_url(name: &str, v: &str, fragment: bool) -> Result<(), ConfigError> {
+	let u = url::Url::parse(v).map_err(|e| err(name, format!("{v:?}: {e}")))?;
+	if !matches!(u.scheme(), "http" | "https")
+		|| u.query().is_some()
+		|| (!fragment && u.fragment().is_some())
+	{
+		return Err(err(
+			name,
+			format!("{v:?} must be an http(s) URL with no query or fragment"),
+		));
+	}
+	Ok(())
 }
 
 #[derive(Clone, Debug)]
@@ -562,6 +717,10 @@ impl Config {
 
 			cors_extra_headers: env.list("CORS_ALLOWED_HEADERS"),
 			log_level: env.string("LOG_LEVEL", "info"),
+
+			database_tokens: DatabaseTokens::read(env)?,
+			rate_database_device: env.float("RATE_LIMIT_DATABASE_DEVICE", 30.0)?,
+			rate_database_token: env.float("RATE_LIMIT_DATABASE_TOKEN", 300.0)?,
 		};
 		if config.saml_enabled && config.saml_private_key.is_none() {
 			return Err(err(
@@ -636,5 +795,85 @@ mod tests {
 		let on = Config::from_env(&Env::from_map(m)).unwrap();
 		assert!(on.anonymous_users_enabled);
 		assert_eq!(on.rate_anonymous, 5.0);
+	}
+
+	fn database_base() -> HashMap<String, String> {
+		let mut m = HashMap::new();
+		m.insert(
+			"AUTH_DB_DATABASE_URL".to_string(),
+			"postgres://x".to_string(),
+		);
+		m.insert("AUTH_SITE_URL".to_string(), "http://app.test".to_string());
+		m.insert(
+			"AUTH_JWT_SECRET".to_string(),
+			"a-secret-of-at-least-thirty-two-characters".to_string(),
+		);
+		m
+	}
+
+	fn database_on() -> HashMap<String, String> {
+		let mut m = database_base();
+		m.insert("AUTH_DATABASE_TOKENS_ENABLED".into(), "true".into());
+		m.insert(
+			"AUTH_DATABASE_TOKENS_ISSUER".into(),
+			"https://accounts.example.com/auth/v1".into(),
+		);
+		m.insert(
+			"AUTH_DATABASE_TOKENS_KEYS".into(),
+			serde_json::json!({ "db-1": crate::dbtoken::tests::new_key_b64() }).to_string(),
+		);
+		m.insert(
+			"AUTH_DATABASE_TOKENS_CLIENT_IDS".into(),
+			"psql, snoutdata".into(),
+		);
+		m.insert(
+			"AUTH_DATABASE_TOKENS_VERIFICATION_URI".into(),
+			"https://dashboard.example.com/#/database".into(),
+		);
+		m
+	}
+
+	#[test]
+	fn database_tokens_are_off_until_switched_on() {
+		let c = Config::from_env(&Env::from_map(database_base())).unwrap();
+		assert!(c.database_tokens.is_none());
+		let c = Config::from_env(&Env::from_map(database_on())).unwrap();
+		let d = c.database_tokens.unwrap();
+		assert_eq!(d.client_ids, vec!["psql", "snoutdata"]);
+		assert_eq!(d.lifetime, Duration::from_secs(3600));
+		assert_eq!(d.poll_interval, Duration::from_secs(5));
+		assert_eq!(d.device_code_expiry, Duration::from_secs(600));
+		assert_eq!(d.access_function, "public.database_token_role");
+		assert_eq!(d.keys.signing_kid(), "db-1");
+	}
+
+	#[test]
+	fn database_tokens_refuse_a_missing_or_wrong_setting() {
+		for (name, value) in [
+			("AUTH_DATABASE_TOKENS_ISSUER", ""),
+			(
+				"AUTH_DATABASE_TOKENS_ISSUER",
+				"https://accounts.example.com/auth/v1/",
+			),
+			("AUTH_DATABASE_TOKENS_ISSUER", "ftp://x"),
+			("AUTH_DATABASE_TOKENS_KEYS", ""),
+			("AUTH_DATABASE_TOKENS_KEYS", "{\"a\": \"bm8=\"}"),
+			("AUTH_DATABASE_TOKENS_CLIENT_IDS", ""),
+			("AUTH_DATABASE_TOKENS_VERIFICATION_URI", ""),
+			("AUTH_DATABASE_TOKENS_ACCESS_FUNCTION", "no_schema"),
+			(
+				"AUTH_DATABASE_TOKENS_ACCESS_FUNCTION",
+				"public.x; drop table y",
+			),
+			("AUTH_DATABASE_TOKENS_EXP", "30s"),
+			("AUTH_DATABASE_TOKENS_EXP", "48h"),
+			("AUTH_DATABASE_TOKENS_POLL_INTERVAL", "0"),
+			("AUTH_DATABASE_TOKENS_SIGNING_KID", "nope"),
+		] {
+			let mut m = database_on();
+			m.insert(name.to_string(), value.to_string());
+			let e = Config::from_env(&Env::from_map(m)).unwrap_err();
+			assert_eq!(e.name, name, "{name}={value:?} should be refused, got {e}");
+		}
 	}
 }

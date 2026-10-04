@@ -20,6 +20,7 @@ use crate::models::{session, user};
 use crate::ratelimit::{Limiter, Limits};
 
 pub mod admin;
+pub mod database;
 pub mod external;
 pub mod mail;
 pub mod mfa;
@@ -43,6 +44,8 @@ pub struct App {
 	pub saml: Option<saml::ServiceProvider>,
 	pub oidc: crate::oidc::Cache,
 	pub otp_guesses: crate::ratelimit::OtpGuesses,
+	/// Wrong database sign-in codes typed, per person.
+	pub db_code_misses: crate::ratelimit::CodeMisses,
 }
 
 pub type Shared = State<Arc<App>>;
@@ -536,8 +539,26 @@ async fn not_enabled(req: Req) -> Response {
 }
 
 pub fn router(app: Arc<App>) -> Router {
-	Router::new()
-		.route("/health", get(health))
+	let mut r = Router::new();
+	// Database tokens: routed only when switched on, so with them off every one of these paths
+	// falls through to the answer it gave before they existed.
+	if app.config.database_tokens.is_some() {
+		r = r
+			.route(
+				"/.well-known/openid-configuration",
+				get(database::discovery),
+			)
+			.route(
+				"/.well-known/oauth-authorization-server",
+				get(database::discovery),
+			)
+			.route("/db/jwks", get(database::jwks))
+			.route("/db/device", post(database::device_authorization))
+			.route("/db/token", post(database::token))
+			.route("/db/device/lookup", post(database::lookup))
+			.route("/db/device/approve", post(database::approve));
+	}
+	r.route("/health", get(health))
 		.route("/settings", get(settings))
 		.route("/.well-known/jwks.json", get(jwks))
 		.route("/signup", post(signup::signup))

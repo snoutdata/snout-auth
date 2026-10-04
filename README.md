@@ -25,6 +25,9 @@ server of the same API are read as they are.
   2.0 single sign-on with an admin API for identity providers, including metadata by URL that is
   fetched again when it goes stale.
 - **An admin API** for users, factors, links and the audit log, open only to an admin role.
+- **Database tokens**, when switched on: the issuer PostgreSQL 18's `oauth` sign-in talks to, so a
+  person opens `psql` with their own identity instead of a shared password. RFC 8628's device grant,
+  ES256 tokens from a key of their own, and a database role named by your own SQL function.
 - **Refuses rather than guesses.** Missing or weak settings stop the server at start and name the
   variable; there is no default signing key.
 
@@ -101,6 +104,16 @@ Durations are written `10s`, `5m`, `1h30m`.
 | `SAML_RATE_LIMIT_ASSERTION` | `15` | Per caller, per 5 minutes. |
 | `MFA_RATE_LIMIT_CHALLENGE_AND_VERIFY` | `15` | Per caller, per minute. |
 | `RATE_LIMIT_ANONYMOUS_USERS` | `30` | Guests made, per caller, per hour. |
+| `RATE_LIMIT_DATABASE_DEVICE` / `RATE_LIMIT_DATABASE_TOKEN` | `30` / `300` | Database sign-ins started, and polls of their token endpoint, per caller, per 5 minutes. |
+| `DATABASE_TOKENS_ENABLED` | `false` | Database tokens (below). Off, none of their endpoints exist and no table is made. |
+| `DATABASE_TOKENS_ISSUER` | required with them | The issuer URL, exactly as every database's `pg_hba` line and every client's `oauth_issuer` write it, and this server's public address (the endpoints are under it). No trailing `/`. |
+| `DATABASE_TOKENS_KEYS` | required with them | A JSON object of key id to a P-256 private key, base64 PKCS#8 DER. Every key's public half is published; one signs. |
+| `DATABASE_TOKENS_SIGNING_KID` | the only key | Which key signs. Required when there are several. |
+| `DATABASE_TOKENS_CLIENT_IDS` | required with them | The public client ids that may ask, comma separated (`psql,snoutdata`). |
+| `DATABASE_TOKENS_VERIFICATION_URI` | required with them | The page where a person types the code. |
+| `DATABASE_TOKENS_ACCESS_FUNCTION` | `public.database_token_role` | `schema.function(uuid, text) returns text`: a person's role on a project, or null. |
+| `DATABASE_TOKENS_EXP` | `1h` | Token lifetime, 1m to 24h. |
+| `DATABASE_TOKENS_DEVICE_CODE_EXPIRY` / `DATABASE_TOKENS_POLL_INTERVAL` | `10m` / `5s` | How long a code waits for a person, and how often a client may ask. |
 | `CORS_ALLOWED_HEADERS` | none | Extra request headers browsers may send. |
 | `LOG_LEVEL` | `info` | |
 
@@ -119,6 +132,58 @@ assertion around forged content gets nothing through. The assertion must be addr
 server (recipient, destination, audience), be recent, answer the request this server made (or be
 IdP-initiated), and come from the identity provider its issuer names. Documents with a DTD are
 refused before they are read. Encrypted assertions and the artifact binding are not accepted.
+
+## Database tokens
+
+PostgreSQL 18 can sign a person in with an OAuth bearer token (`pg_hba` method `oauth`), fetched by
+libpq through the device grant and checked by a validator module in the server. With
+`AUTH_DATABASE_TOKENS_ENABLED=true` this server is that issuer:
+
+| | |
+|---|---|
+| `GET /.well-known/openid-configuration` | The issuer's metadata, which libpq reads (`<issuer>/.well-known/openid-configuration`). Also at `/.well-known/oauth-authorization-server`. |
+| `GET /db/jwks` | The public keys a database checks tokens with. Never the session keys, and never at `/.well-known/jwks.json`. |
+| `POST /db/device` | Device authorization (RFC 8628 §3.1): `client_id` and `scope`, form-encoded. |
+| `POST /db/token` | The `urn:ietf:params:oauth:grant-type:device_code` grant, answering `authorization_pending`, `slow_down`, `access_denied` and `expired_token` as RFC 8628 §3.5 says. |
+| `POST /db/device/lookup` | `{"user_code"}`, with a signed-in session: what that code would open, and whether this person may. |
+| `POST /db/device/approve` | `{"user_code", "decision": "approve" \| "deny"}`, with a signed-in session. |
+
+The database names its project in the scope it hands the client (`scope="openid db:<ref>"` on the
+`pg_hba` line), so the person never types it. The person types the code the client printed into
+the verification page (a code is never carried in a link) and approves it there; the page calls
+`/db/device/approve` with their session. A guest cannot approve, and an account with a second factor
+must have verified it in that session. Ten wrong codes in fifteen minutes and a person is made to
+wait.
+
+**Who may open what is your database's to say.** On approval, and again when the token is issued,
+this server calls the access function as its own database role:
+
+```sql
+create function public.database_token_role(p_user_id uuid, p_project_ref text)
+	returns text language sql stable security definer set search_path = public, pg_temp
+as $$ select role_name from my_grants where user_id = p_user_id and project_ref = p_project_ref $$;
+grant execute on function public.database_token_role(uuid, text) to <this server's role>;
+```
+
+It returns the Postgres role provisioned for that person on that project, or null for no access.
+A missing function refuses every token (with a log line), as does a role that is not a plain
+identifier or starts with `pg_`.
+
+The token is an ES256 JWT naming its key in `kid`: `iss`, `sub` (the user id), `aud` (the project
+ref), `email`, `token_use: "db"`, `db_role`, `client_id`, `jti`, `iat`, `exp`. It never carries
+`role`, it is never signed with the session secret, and the session verifier refuses it, so a
+database token opens no HTTP API and a session token opens no database. Issuing, approving,
+turning down and refusing are on the audit log (`database_token_issued`, `database_device_approved`,
+`database_device_denied`, `database_token_refused`).
+
+Rotating the signing key without a failed sign-in: add the new key (it is published at once, so
+every database learns it first), then point `DATABASE_TOKENS_SIGNING_KID` at it, and remove the old
+key once the longest-lived token it signed has expired. A key is made with
+`openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 | openssl pkcs8 -topk8 -nocrypt -outform DER | base64`.
+
+Pending sign-ins live in `auth.database_device_codes`, made at start when the feature is on (it is
+ours, not part of the upstream schema, so it is not in `schema_migrations`). Both codes are stored
+as SHA-256 only.
 
 ## Security
 
