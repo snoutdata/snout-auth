@@ -1,4 +1,5 @@
-//! `POST /signup`: a new account with an email address and a password.
+//! `POST /signup`: a new account with an email address and a password, or, with neither an
+//! address nor a phone number, a guest (an anonymous user) when the project allows them.
 
 use axum::http::HeaderMap;
 use axum::response::Response;
@@ -77,17 +78,23 @@ pub fn is_race<T>(r: &ApiResult<T>) -> bool {
 
 async fn handle(app: &App, req: &Req) -> ApiResult<Response> {
 	let cfg = &app.config;
+	let p = req.params()?;
+	let mut email = p.str("email")?;
+	let phone = p.str("phone")?;
+	let data = p.map("data")?.unwrap_or_default();
+	// No address and no phone number is a guest, decided before anything else is checked: with
+	// guests off, such a request is refused as a disabled provider, as upstream refuses it, and
+	// not as a sign-up that forgot its email.
+	if email.is_empty() && phone.is_empty() {
+		return anonymous(app, req, data).await;
+	}
 	if cfg.disable_signup {
 		return Err(ApiError::unprocessable(
 			"signup_disabled",
 			"Signups not allowed for this instance",
 		));
 	}
-	let p = req.params()?;
-	let mut email = p.str("email")?;
-	let phone = p.str("phone")?;
 	let password = p.str("password")?;
-	let data = p.map("data")?.unwrap_or_default();
 	let challenge = p.str("code_challenge")?;
 	let challenge_method = p.str("code_challenge_method")?;
 
@@ -113,16 +120,11 @@ async fn handle(app: &App, req: &Req) -> ApiResult<Response> {
 	pkce::validate_params(&challenge_method, &challenge)?;
 	let pkce_flow = !challenge.is_empty();
 
+	// No email here means a phone number (no address and no phone was a guest, above).
 	if email.is_empty() {
-		if !phone.is_empty() {
-			return Err(ApiError::bad_request(
-				"phone_provider_disabled",
-				"Phone signups are disabled",
-			));
-		}
 		return Err(ApiError::bad_request(
-			"validation_failed",
-			"Sign up only available with email provider",
+			"phone_provider_disabled",
+			"Phone signups are disabled",
 		));
 	}
 	if !cfg.email_enabled {
@@ -282,6 +284,57 @@ async fn handle(app: &App, req: &Req) -> ApiResult<Response> {
 	}
 	Ok(crate::json::ok(&u.to_json()))
 }
+
+/// A guest: a user with no email, no phone and no password, signed in at once. The session is a
+/// real one (`auth.uid()` works in a policy) and its token says `is_anonymous: true`. The guest
+/// becomes a full account by adding an address with `PUT /user`, keeping the same id.
+async fn anonymous(app: &App, req: &Req, data: Map<String, Value>) -> ApiResult<Response> {
+	let cfg = &app.config;
+	if !cfg.anonymous_users_enabled {
+		return Err(ApiError::unprocessable(
+			"anonymous_provider_disabled",
+			"Anonymous sign-ins are disabled",
+		));
+	}
+	super::limit(app, req, &app.limits.anonymous)?;
+	if cfg.disable_signup {
+		return Err(ApiError::unprocessable(
+			"signup_disabled",
+			"Signups not allowed for this instance",
+		));
+	}
+	let claims = super::optional_claims(app, req);
+	let aud = super::request_aud(app, req, claims.as_ref());
+
+	let mut conn = app.pool.get().await.map_err(super::pool_error)?;
+	let tx = conn
+		.transaction()
+		.await
+		.map_err(db("Database error creating anonymous user"))?;
+	// No identity and no provider in `app_metadata`, and nothing on the audit log, as upstream:
+	// a guest is visible by `is_anonymous` and by the `anonymous` method in its token's `amr`.
+	let mut u = user::new_user("", "", None, &aud, Some(data));
+	u.is_anonymous = true;
+	create_user(&tx, &mut u, &cfg.jwt_default_group).await?;
+	let mut headers = HeaderMap::new();
+	let body = issue_session(
+		app,
+		&tx,
+		req,
+		&mut headers,
+		&mut u,
+		ANONYMOUS,
+		Grant::default(),
+	)
+	.await?;
+	tx.commit()
+		.await
+		.map_err(db("Database error creating anonymous user"))?;
+	Ok(with_headers(crate::json::ok(&body), headers))
+}
+
+/// The `amr` method of a guest's session.
+pub const ANONYMOUS: &str = "anonymous";
 
 /// What a repeated sign-up returns: a user that looks new and holds nothing real.
 fn obfuscated(u: &user::User, email: &str, aud: &str, data: &Map<String, Value>) -> Value {

@@ -295,7 +295,12 @@ async fn update(app: &App, req: &Req) -> ApiResult<Response> {
 			.await
 			.map_err(db("Error updating user"))?;
 	}
-	if !email.is_empty() && email != u.email {
+	if !email.is_empty() && email != u.email && u.is_anonymous && cfg.autoconfirm {
+		// A guest adding an address where sign-ups need no confirmation: the address is theirs
+		// at once, as a sign-up's would be, and they stop being a guest.
+		u.email_change = email.clone();
+		super::verify::complete_email_change(&tx, req, &mut u).await?;
+	} else if !email.is_empty() && email != u.email {
 		let pkce_flow = !challenge.is_empty();
 		if pkce_flow {
 			crate::pkce::validate_params(&challenge_method, &challenge)?;

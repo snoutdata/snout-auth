@@ -69,6 +69,7 @@ pub struct Limits {
 	pub recover: Limiter,
 	pub resend: Limiter,
 	pub signups: Limiter,
+	pub anonymous: Limiter,
 	pub user: Limiter,
 	pub sso: Limiter,
 	pub saml_assertion: Limiter,
@@ -90,6 +91,12 @@ impl Limits {
 			recover: per_5m(cfg.rate_otp),
 			resend: per_5m(cfg.rate_otp),
 			signups: per_5m(cfg.rate_otp),
+			// Per hour, as upstream counts it: each one is a row in the project's own `auth.users`.
+			anonymous: Limiter::new(
+				cfg.rate_anonymous,
+				Duration::from_secs(3600),
+				cfg.rate_anonymous,
+			),
 			user: per_5m(cfg.rate_otp),
 			sso: Limiter::new(cfg.rate_sso, five_min, 30.0),
 			saml_assertion: Limiter::new(cfg.rate_saml_assertion, five_min, 30.0),

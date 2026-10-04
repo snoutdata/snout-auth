@@ -336,6 +336,8 @@ pub struct Config {
 	pub rate_sso: f64,
 	pub rate_saml_assertion: f64,
 	pub rate_mfa: f64,
+	/// Anonymous sign-ins per client per hour.
+	pub rate_anonymous: f64,
 
 	pub refresh_rotation: bool,
 	pub refresh_reuse_interval: i64,
@@ -354,6 +356,8 @@ pub struct Config {
 
 	pub google: Provider,
 	pub github: Provider,
+	/// Guests: `POST /signup` with no address makes a user with no email and no password.
+	pub anonymous_users_enabled: bool,
 	pub flow_state_expiry: Duration,
 
 	pub saml_enabled: bool,
@@ -517,6 +521,7 @@ impl Config {
 			rate_sso: env.float("RATE_LIMIT_SSO", 30.0)?,
 			rate_saml_assertion: env.float("SAML_RATE_LIMIT_ASSERTION", 15.0)?,
 			rate_mfa: env.float("MFA_RATE_LIMIT_CHALLENGE_AND_VERIFY", 15.0)?,
+			rate_anonymous: env.float("RATE_LIMIT_ANONYMOUS_USERS", 30.0)?,
 
 			refresh_rotation: env.bool("SECURITY_REFRESH_TOKEN_ROTATION_ENABLED", true)?,
 			refresh_reuse_interval: env.int("SECURITY_REFRESH_TOKEN_REUSE_INTERVAL", 0)?,
@@ -541,6 +546,7 @@ impl Config {
 
 			google: Provider::read(env, "GOOGLE")?,
 			github: Provider::read(env, "GITHUB")?,
+			anonymous_users_enabled: env.bool("EXTERNAL_ANONYMOUS_USERS_ENABLED", false)?,
 			flow_state_expiry: env.duration(
 				"EXTERNAL_FLOW_STATE_EXPIRY_DURATION",
 				Duration::from_secs(300),
@@ -598,5 +604,37 @@ mod tests {
 		m.insert("AUTH_SITE_URL".to_string(), "http://app.test".to_string());
 		let e = Config::from_env(&Env::from_map(m)).unwrap_err();
 		assert_eq!(e.name, "AUTH_JWT_SECRET");
+	}
+
+	#[test]
+	fn guests_are_off_until_switched_on() {
+		let base = || {
+			let mut m = HashMap::new();
+			m.insert(
+				"AUTH_DB_DATABASE_URL".to_string(),
+				"postgres://x".to_string(),
+			);
+			m.insert("AUTH_SITE_URL".to_string(), "http://app.test".to_string());
+			m.insert(
+				"AUTH_JWT_SECRET".to_string(),
+				"a-secret-of-at-least-thirty-two-characters".to_string(),
+			);
+			m
+		};
+		let off = Config::from_env(&Env::from_map(base())).unwrap();
+		assert!(!off.anonymous_users_enabled);
+		assert_eq!(off.rate_anonymous, 30.0);
+		let mut m = base();
+		m.insert(
+			"AUTH_EXTERNAL_ANONYMOUS_USERS_ENABLED".to_string(),
+			"true".to_string(),
+		);
+		m.insert(
+			"AUTH_RATE_LIMIT_ANONYMOUS_USERS".to_string(),
+			"5".to_string(),
+		);
+		let on = Config::from_env(&Env::from_map(m)).unwrap();
+		assert!(on.anonymous_users_enabled);
+		assert_eq!(on.rate_anonymous, 5.0);
 	}
 }

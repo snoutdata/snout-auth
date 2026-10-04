@@ -16,6 +16,9 @@ server of the same API are read as they are.
 - **Sessions that refresh safely.** Short-lived HS256 access tokens, refresh tokens that rotate
   with a reuse window, and sessions that can be time-boxed, expired on inactivity, or limited to
   one per user.
+- **Guests.** When switched on, a sign-up with no address is a guest: a real session (so
+  `auth.uid()` works in a policy) whose token carries `is_anonymous: true`. Adding an address with
+  `PUT /user` makes the guest a full account with the same id.
 - **Multi-factor.** TOTP enrolment, challenge and verification, with assurance levels (`aal1`,
   `aal2`) in every token.
 - **Google, GitHub and SAML.** OAuth sign-in through Google and GitHub, Google ID tokens, and SAML
@@ -63,6 +66,7 @@ Durations are written `10s`, `5m`, `1h30m`.
 | `API_HOST` / `PORT` | `0.0.0.0` / `9999` | Where to listen. |
 | `DISABLE_SIGNUP` | `false` | Refuse new users (invites still work). |
 | `EXTERNAL_EMAIL_ENABLED` | `true` | Email and password sign-in. |
+| `EXTERNAL_ANONYMOUS_USERS_ENABLED` | `false` | Guests: `POST /signup` with no address signs in a user with no email or password. |
 | `PASSWORD_MIN_LENGTH` | `6` | |
 | `MAILER_AUTOCONFIRM` | `false` | Sign-ups are confirmed without a mail. |
 | `MAILER_SECURE_EMAIL_CHANGE_ENABLED` | `true` | An address change is confirmed from both addresses. |
@@ -96,6 +100,7 @@ Durations are written `10s`, `5m`, `1h30m`.
 | `RATE_LIMIT_{TOKEN_REFRESH,VERIFY,OTP,SSO}` | `150`, `30`, `30`, `30` | Per caller, per 5 minutes. |
 | `SAML_RATE_LIMIT_ASSERTION` | `15` | Per caller, per 5 minutes. |
 | `MFA_RATE_LIMIT_CHALLENGE_AND_VERIFY` | `15` | Per caller, per minute. |
+| `RATE_LIMIT_ANONYMOUS_USERS` | `30` | Guests made, per caller, per hour. |
 | `CORS_ALLOWED_HEADERS` | none | Extra request headers browsers may send. |
 | `LOG_LEVEL` | `info` | |
 
