@@ -321,6 +321,10 @@ pub fn log_type(action: &str) -> &'static str {
 		"login" | "logout" | "invite_accepted" => "account",
 		"user_signedup" | "user_invited" | "user_deleted" => "team",
 		"token_revoked" | "token_refreshed" => "token",
+		"database_token_issued"
+		| "database_token_refused"
+		| "database_device_approved"
+		| "database_device_denied" => "token",
 		"factor_in_progress"
 		| "factor_unenrolled"
 		| "challenge_created"

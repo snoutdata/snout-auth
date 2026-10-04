@@ -21,6 +21,9 @@ async fn run(serve: bool) -> Result<(), String> {
 		config.max_pool_size,
 	)?;
 	migrate::run(&pool, &config.namespace).await?;
+	if config.database_tokens.is_some() {
+		snout_auth::models::device::ensure(&pool, &config.namespace).await?;
+	}
 	if !serve {
 		return Ok(());
 	}
@@ -52,6 +55,7 @@ async fn run(serve: bool) -> Result<(), String> {
 		saml,
 		oidc: Default::default(),
 		otp_guesses: Default::default(),
+		db_code_misses: Default::default(),
 	});
 	let listener = tokio::net::TcpListener::bind(&address)
 		.await
