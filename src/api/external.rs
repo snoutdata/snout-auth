@@ -773,8 +773,9 @@ pub(crate) async fn account_from_identity<C: deadpool_postgres::GenericClient>(
 		.map(|(e, v, _)| (e.to_lowercase(), *v))
 		.unwrap_or_default();
 
+	// The identity is boxed so the enum is the size of a user, as Link is, rather than of both.
 	enum Decision {
-		Exists(user::User, identity::Identity),
+		Exists(user::User, Box<identity::Identity>),
 		Create,
 		Link(user::User),
 		Multiple,
@@ -788,7 +789,7 @@ pub(crate) async fn account_from_identity<C: deadpool_postgres::GenericClient>(
 			.map_err(db("Database error"))?
 			.ok_or_else(|| ApiError::internal("user not found"))?;
 		candidate.0 = u.email.clone();
-		Decision::Exists(u, i)
+		Decision::Exists(u, Box::new(i))
 	} else if verified.is_empty() {
 		if super::signup::duplicate_email(tx, &candidate.0, &aud, None)
 			.await?
@@ -898,7 +899,8 @@ pub(crate) async fn account_from_identity<C: deadpool_postgres::GenericClient>(
 			nu.identities.push(i.clone());
 			(nu, i)
 		}
-		Decision::Exists(mut u, mut i) => {
+		Decision::Exists(mut u, i) => {
+			let mut i = *i;
 			i.identity_data = data.clone();
 			let now = crate::json::now();
 			tx.execute(
