@@ -502,6 +502,7 @@ async fn settings(State(app): Shared) -> Response {
 			"github" => c.github.enabled,
 			"google" => c.google.enabled,
 			"email" => c.email_enabled,
+			"anonymous_users" => c.anonymous_users_enabled,
 			_ => false,
 		};
 		external.insert(p.into(), Value::Bool(on));

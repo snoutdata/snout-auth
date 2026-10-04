@@ -328,7 +328,13 @@ pub async fn by_phone<C: GenericClient>(
 /// written now; the role is set afterwards with `set_role`, as a separate write.
 pub async fn insert<C: GenericClient>(db: &C, u: &User) -> Result<(), tokio_postgres::Error> {
 	let now = crate::json::now();
-	let email: Option<&str> = Some(u.email.as_str());
+	// No address is NULL, as `update` writes it, so guests (who have none) do not collide on
+	// `users_email_partial_key`.
+	let email: Option<&str> = if u.email.is_empty() {
+		None
+	} else {
+		Some(u.email.as_str())
+	};
 	let phone: Option<&str> = if u.phone.is_empty() {
 		None
 	} else {

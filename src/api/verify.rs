@@ -366,6 +366,18 @@ async fn email_change_verify<C: GenericClient>(
 		.map_err(db("Database error"))?;
 		return Ok(false);
 	}
+	complete_email_change(tx, req, u).await?;
+	Ok(true)
+}
+
+/// Make `u.email_change` the user's address: the email identity, the row, and confirmation. A
+/// guest who gets here is a guest no more. Also how a guest's `PUT /user` with an address lands
+/// when sign-ups are confirmed automatically, since then there is no mail to wait for.
+pub async fn complete_email_change<C: GenericClient>(
+	tx: &C,
+	req: &Req,
+	u: &mut User,
+) -> ApiResult<()> {
 	audit(tx, u, "user_modified", req, None).await?;
 	let new_email = u.email_change.clone();
 	match identity::by_provider(tx, &u.id.to_string(), "email")
@@ -424,7 +436,7 @@ async fn email_change_verify<C: GenericClient>(
 	if !u.is_confirmed() {
 		super::signup::confirm(tx, u).await?;
 	}
-	Ok(true)
+	Ok(())
 }
 
 async fn apply<C: GenericClient>(
