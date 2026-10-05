@@ -622,6 +622,26 @@ impl Assertion {
 	}
 }
 
+/// Whether an address an identity provider asserted is in one of the domains registered for that
+/// provider (`sso_domains`), and so is one it may speak for. A signed assertion proves which
+/// provider sent it, not that the provider owns the address in it: without this, any provider
+/// registered for any domain could sign a user in under somebody else's address. The domain is
+/// compared without ASCII case and must match a registered one exactly (a subdomain is registered
+/// on its own). An address with no `@`, more than one, or an empty side is refused, as is every
+/// address when the provider has no domains at all.
+pub fn email_in_domains<'a>(email: &str, domains: impl IntoIterator<Item = &'a str>) -> bool {
+	let mut parts = email.trim().split('@');
+	let (Some(local), Some(domain), None) = (parts.next(), parts.next(), parts.next()) else {
+		return false;
+	};
+	if local.is_empty() || domain.is_empty() {
+		return false;
+	}
+	domains
+		.into_iter()
+		.any(|d| !d.trim().is_empty() && d.trim().eq_ignore_ascii_case(domain))
+}
+
 /// What a response is checked against.
 pub struct Expect<'a> {
 	pub idp_entity: &'a str,
@@ -879,6 +899,31 @@ mod tests {
 			certs: vec![],
 		};
 		assert!(!m.is_stale(now, now));
+	}
+
+	#[test]
+	fn an_asserted_address_must_be_in_the_providers_domains() {
+		let domains = ["corp.test", "New.Test"];
+		let ok = |e: &str| email_in_domains(e, domains.iter().copied());
+		assert!(ok("sam@corp.test"));
+		assert!(ok("Terry@Corp.Test"));
+		assert!(ok("  rita@new.test "));
+		assert!(ok("rita@NEW.TEST"));
+		// Another domain, a subdomain, a lookalike: refused.
+		assert!(!ok("victim@gmail.com"));
+		assert!(!ok("sam@eu.corp.test"));
+		assert!(!ok("sam@corp.test.evil.test"));
+		assert!(!ok("sam@evilcorp.test"));
+		// Not one address: refused rather than guessed at.
+		assert!(!ok("victim@gmail.com@corp.test"));
+		assert!(!ok("\"a@b\"@corp.test"));
+		assert!(!ok("corp.test"));
+		assert!(!ok("@corp.test"));
+		assert!(!ok("sam@"));
+		assert!(!ok(""));
+		// A provider with no domains speaks for no address.
+		assert!(!email_in_domains("sam@corp.test", []));
+		assert!(!email_in_domains("sam@corp.test", [""]));
 	}
 
 	#[test]

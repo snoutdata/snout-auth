@@ -284,6 +284,18 @@ async fn consume(
 			"SAML Assertion does not contain an email address",
 		));
 	}
+	// The address is marked verified below, so a provider may only assert one in its own domains
+	// (DIVERGENCES.md, D24). Refused before anything is written.
+	if !saml::email_in_domains(&email, provider.domains.iter().map(|d| d.domain.as_str())) {
+		return Err(ApiError::forbidden(
+			"saml_email_domain_not_allowed",
+			"The email address in the SAML Assertion is not in a domain registered for this identity provider",
+		)
+		.with_internal(format!(
+			"sso provider {} asserted an address outside its domains",
+			provider.id
+		)));
+	}
 	claims.insert("email".into(), json!(email));
 	let data = identity_data(claims, &user_id, &meta.entity_id, &email)?;
 
