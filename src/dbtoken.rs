@@ -6,8 +6,7 @@
 //! the verdict on each poll of the token endpoint. The handlers are `api/database.rs`, the table
 //! `models/device.rs`.
 //!
-//! **A database token can never pass for a session token, in either direction** (the plan's O5
-//! and O9). It is signed with its own ES256 key, never the session secret, and that key is
+//! **A database token can never pass for a session token, in either direction.** It is signed with its own ES256 key, never the session secret, and that key is
 //! published at its own key set, never at `/.well-known/jwks.json`; it carries
 //! `"token_use": "db"` and its Postgres role in `db_role`, never `role`; and its audience is the
 //! project's ref, never `authenticated`. So `jwt::verify` refuses it (wrong algorithm), the data
@@ -28,7 +27,7 @@ pub const DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
 /// What `token_use` says on every database token.
 pub const TOKEN_USE: &str = "db";
 
-/// The scope token that names the project: `db:<ref>` (the plan's O10). The server's `pg_hba`
+/// The scope token that names the project: `db:<ref>`. The server's `pg_hba`
 /// line sets it, and libpq passes it on, so the person never types which project they meant.
 pub const SCOPE_PREFIX: &str = "db:";
 
@@ -239,7 +238,7 @@ pub struct Grant<'a> {
 	pub jti: &'a str,
 }
 
-/// A database token's claims. No `role` claim, ever (O9): `db_role` is the Postgres role, and
+/// A database token's claims. No `role` claim, ever: `db_role` is the Postgres role, and
 /// `role` is what the HTTP services read a session's privileges from.
 pub fn claims(g: &Grant<'_>, iat: i64, lifetime: Duration) -> Value {
 	let mut m = Map::new();

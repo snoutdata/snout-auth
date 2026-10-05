@@ -313,7 +313,7 @@ async fn verify_factor(app: &App, req: &Req, id: &str) -> ApiResult<Response> {
 	t.insert("factor_type".into(), json!(f.factor_type));
 	audit(&tx, &caller.user, "verification_attempted", req, Some(t)).await?;
 	// A code already accepted once is refused, on a new challenge too (RFC 6238 §5.2). Upstream
-	// accepts it again for as long as it is current (DIVERGENCES.md D19).
+	// accepts it again for as long as it is current.
 	if factor::totp_step_used(&tx, f.id, step)
 		.await
 		.map_err(db("Database error"))?
@@ -523,7 +523,7 @@ mod tests {
 
 	#[test]
 	fn a_valid_code_says_which_time_step_it_belongs_to() {
-		// The step is what a second use of the same code is refused by (D19).
+		// The step is what a second use of the same code is refused by.
 		// RFC 6238's secret, as an enrolment stores it.
 		let secret = BASE32_NOPAD.encode(b"12345678901234567890");
 		let at = OffsetDateTime::from_unix_timestamp(59).unwrap();
