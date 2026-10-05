@@ -13,8 +13,8 @@
 //! exactly what it answered before they existed.
 //!
 //! The person never types which project: the database's `pg_hba` line puts `db:<ref>` in its
-//! scope, libpq sends that scope to `/db/device`, and the token's audience is that ref (O10). The
-//! role is never the client's to choose either: the access function names it (O3, O7).
+//! scope, libpq sends that scope to `/db/device`, and the token's audience is that ref. The
+//! role is never the client's to choose either: the access function names it.
 
 use axum::extract::State;
 use axum::http::{HeaderValue, header};
@@ -55,7 +55,7 @@ pub async fn discovery(State(app): Shared) -> Response {
 }
 
 /// The DATABASE keys, apart from `/.well-known/jwks.json` (the session keys) on purpose: whatever
-/// trusts one set must never be handed the other (O5).
+/// trusts one set must never be handed the other.
 pub async fn jwks(State(app): Shared) -> Response {
 	let mut r = crate::json::ok(&settings(&app).keys.jwks());
 	r.headers_mut().insert(

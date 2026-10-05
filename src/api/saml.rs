@@ -285,7 +285,7 @@ async fn consume(
 		));
 	}
 	// The address is marked verified below, so a provider may only assert one in its own domains
-	// (DIVERGENCES.md, D24). Refused before anything is written.
+	// (upstream accepts any). Refused before anything is written.
 	if !saml::email_in_domains(&email, provider.domains.iter().map(|d| d.domain.as_str())) {
 		return Err(ApiError::forbidden(
 			"saml_email_domain_not_allowed",
