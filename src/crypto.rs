@@ -29,9 +29,18 @@ pub fn otp(digits: usize) -> String {
 	)
 }
 
-/// What is stored for a mailed code: the hex SHA-224 of the address followed by the code.
-pub fn token_hash(email_or_phone: &str, otp: &str) -> String {
-	hex::encode(Sha224::digest(format!("{email_or_phone}{otp}").as_bytes()))
+/// What is stored for a mailed code, and is the token in the mailed link: an HMAC-SHA224 of the
+/// address and the code, keyed by a key derived from the project's secret, so a link's token says
+/// nothing about its code. 56 hex characters, the length and alphabet the columns already hold.
+pub fn token_hash(secret: &str, email_or_phone: &str, otp: &str) -> String {
+	let mut derive = HmacSha256::new_from_slice(secret.as_bytes()).expect("hmac key");
+	derive.update(b"snout-auth email token v1");
+	let key = derive.finalize().into_bytes();
+	let mut mac = Hmac::<Sha224>::new_from_slice(&key).expect("hmac key");
+	mac.update(email_or_phone.as_bytes());
+	mac.update(&[0]);
+	mac.update(otp.as_bytes());
+	hex::encode(mac.finalize().into_bytes())
 }
 
 /// Lower-case letters and digits (base32), at least 8 long.
@@ -259,8 +268,20 @@ mod tests {
 	}
 
 	#[test]
-	fn token_hash_is_sha224_hex() {
-		assert_eq!(token_hash("a@b.c", "123456").len(), 56);
+	fn token_hash_is_keyed_and_56_hex() {
+		let secret = "a-project-secret-of-at-least-32-chars";
+		let h = token_hash(secret, "a@b.c", "123456");
+		assert_eq!(h.len(), 56);
+		assert!(h.bytes().all(|b| b.is_ascii_hexdigit()));
+		assert_eq!(h, token_hash(secret, "a@b.c", "123456"));
+		// Not computable from the address and code alone.
+		assert_ne!(h, hex::encode(Sha224::digest(b"a@b.c123456")));
+		assert_ne!(
+			h,
+			token_hash("another-project-secret-32-chars-long", "a@b.c", "123456")
+		);
+		// The address and the code cannot be shifted into each other.
+		assert_ne!(h, token_hash(secret, "a@b.c1", "23456"));
 	}
 
 	#[test]

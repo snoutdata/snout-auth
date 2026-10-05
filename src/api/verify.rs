@@ -601,7 +601,7 @@ async fn verify_code(app: &App, req: &Req) -> ApiResult<Response> {
 				ApiError::unprocessable("validation_failed", "Invalid email format")
 					.with_internal(e.message)
 			})?;
-			p.token_hash = crypto::token_hash(&p.email, &p.token);
+			p.token_hash = crypto::token_hash(&app.config.jwt_secret, &p.email, &p.token);
 		} else {
 			return Err(ApiError::bad_request(
 				"validation_failed",

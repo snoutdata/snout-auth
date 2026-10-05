@@ -150,8 +150,22 @@ async fn handle(app: &App, req: &Req) -> ApiResult<Response> {
 		.map_err(db("Database error saving new user"))?;
 	let existing = duplicate_email(&tx, &email, &aud, None).await?;
 
+	// With autoconfirm on, signing up again for an existing unconfirmed row confirms it and
+	// answers with a session, so only a caller with that row's own password may; everybody else
+	// gets the answer a registered address gets.
+	let claims_row = match &existing {
+		Some(u) if cfg.autoconfirm && !u.is_confirmed() => {
+			let hash = u.encrypted_password.clone().unwrap_or_default();
+			let pw = password.clone();
+			tokio::task::spawn_blocking(move || crypto::verify_password(&hash, &pw))
+				.await
+				.unwrap_or(false)
+		}
+		_ => true,
+	};
+
 	let mut u = match existing {
-		Some(u) if u.is_confirmed() => {
+		Some(u) if u.is_confirmed() || !claims_row => {
 			// Already registered. Recorded, and answered as a new sign-up is, so the answer does
 			// not say which addresses have accounts.
 			audit(
