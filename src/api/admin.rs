@@ -889,7 +889,7 @@ async fn generate(app: &App, req: &Req) -> ApiResult<Response> {
 		super::signup::check_password(cfg, &password)?;
 	}
 	let code = crypto::otp(cfg.otp_length);
-	let hashed = crypto::token_hash(&email, &code);
+	let hashed = crypto::token_hash(&app.config.jwt_secret, &email, &code);
 	let tx = conn.transaction().await.map_err(db("Database error"))?;
 	let path: &str;
 	let token_for_link: String;
@@ -1001,7 +1001,8 @@ async fn generate(app: &App, req: &Req) -> ApiResult<Response> {
 			if kind == "email_change_current" {
 				u.email_change_token_current = hashed.clone();
 			} else {
-				u.email_change_token_new = crypto::token_hash(&new_email, &code);
+				u.email_change_token_new =
+					crypto::token_hash(&app.config.jwt_secret, &new_email, &code);
 			}
 			user::update(
 				&tx,

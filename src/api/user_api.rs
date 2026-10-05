@@ -117,7 +117,7 @@ pub async fn verify_reauthentication<C: deadpool_postgres::GenericClient>(
 	if u.reauthentication_token.is_empty() || u.email.is_empty() {
 		return Err(invalid());
 	}
-	let hash = crypto::token_hash(&u.email, nonce);
+	let hash = crypto::token_hash(&app.config.jwt_secret, &u.email, nonce);
 	if !super::verify::otp_valid(&hash, &u.reauthentication_token, sent, app.config.otp_exp) {
 		return Err(invalid());
 	}

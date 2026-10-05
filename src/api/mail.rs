@@ -76,7 +76,10 @@ pub async fn send_confirmation<C: GenericClient>(
 ) -> ApiResult<()> {
 	frequency_check(u.confirmation_sent_at, app.config.smtp_max_frequency)?;
 	let code = otp(app);
-	let hash = pkce::prefix_token(&crypto::token_hash(&u.email, &code), pkce_flow);
+	let hash = pkce::prefix_token(
+		&crypto::token_hash(&app.config.jwt_secret, &u.email, &code),
+		pkce_flow,
+	);
 	let redirect = req.referrer(&app.config);
 	let url = link(
 		app,
@@ -113,7 +116,7 @@ pub async fn send_invite<C: GenericClient>(
 	u: &mut User,
 ) -> ApiResult<()> {
 	let code = otp(app);
-	let hash = crypto::token_hash(&u.email, &code);
+	let hash = crypto::token_hash(&app.config.jwt_secret, &u.email, &code);
 	let redirect = req.referrer(&app.config);
 	let url = link(
 		app,
@@ -158,7 +161,10 @@ pub async fn send_recovery<C: GenericClient>(
 ) -> ApiResult<()> {
 	frequency_check(u.recovery_sent_at, app.config.smtp_max_frequency)?;
 	let code = otp(app);
-	let hash = pkce::prefix_token(&crypto::token_hash(&u.email, &code), pkce_flow);
+	let hash = pkce::prefix_token(
+		&crypto::token_hash(&app.config.jwt_secret, &u.email, &code),
+		pkce_flow,
+	);
 	let redirect = req.referrer(&app.config);
 	let url = link(
 		app,
@@ -197,7 +203,10 @@ pub async fn send_magic_link<C: GenericClient>(
 ) -> ApiResult<()> {
 	frequency_check(u.recovery_sent_at, app.config.smtp_max_frequency)?;
 	let code = otp(app);
-	let hash = pkce::prefix_token(&crypto::token_hash(&u.email, &code), pkce_flow);
+	let hash = pkce::prefix_token(
+		&crypto::token_hash(&app.config.jwt_secret, &u.email, &code),
+		pkce_flow,
+	);
 	let redirect = req.referrer(&app.config);
 	let url = link(
 		app,
@@ -234,7 +243,7 @@ pub async fn send_reauthentication<C: GenericClient>(
 ) -> ApiResult<()> {
 	frequency_check(u.reauthentication_sent_at, app.config.smtp_max_frequency)?;
 	let code = otp(app);
-	let hash = crypto::token_hash(&u.email, &code);
+	let hash = crypto::token_hash(&app.config.jwt_secret, &u.email, &code);
 	let data = serde_json::json!({ "SiteURL": app.config.site_url, "Email": u.email, "Token": code, "Data": u.user_metadata_value() });
 	deliver(
 		app,
@@ -272,13 +281,17 @@ pub async fn send_email_change<C: GenericClient>(
 	frequency_check(u.email_change_sent_at, app.config.smtp_max_frequency)?;
 	let code_new = otp(app);
 	u.email_change = new_email.to_string();
-	u.email_change_token_new =
-		pkce::prefix_token(&crypto::token_hash(new_email, &code_new), pkce_flow);
+	u.email_change_token_new = pkce::prefix_token(
+		&crypto::token_hash(&app.config.jwt_secret, new_email, &code_new),
+		pkce_flow,
+	);
 	let mut code_current = String::new();
 	if app.config.secure_email_change && !u.email.is_empty() {
 		code_current = otp(app);
-		u.email_change_token_current =
-			pkce::prefix_token(&crypto::token_hash(&u.email, &code_current), pkce_flow);
+		u.email_change_token_current = pkce::prefix_token(
+			&crypto::token_hash(&app.config.jwt_secret, &u.email, &code_current),
+			pkce_flow,
+		);
 	}
 	u.email_change_confirm_status = 0;
 	let redirect = req.referrer(&app.config);

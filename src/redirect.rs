@@ -156,6 +156,11 @@ struct Parts {
 /// Read off the string as written: a URL parser would turn `http://2130706433/` or
 /// `http://0x7f.1/` into 127.0.0.1 before anything could refuse it.
 fn parts(s: &str) -> Option<Parts> {
+	// Refused outright: a browser reads a backslash as a path separator and drops control
+	// characters, so this string would not be the URL it follows.
+	if s.contains('\\') || s.chars().any(|c| c.is_ascii_control()) {
+		return None;
+	}
 	let (scheme, rest) = s.split_once(':')?;
 	if scheme.is_empty()
 		|| !scheme
@@ -173,10 +178,11 @@ fn parts(s: &str) -> Option<Parts> {
 	};
 	let end = authority.find(['/', '?', '#']).unwrap_or(authority.len());
 	let authority = &authority[..end];
-	let hostport = authority
-		.rsplit_once('@')
-		.map(|(_, h)| h)
-		.unwrap_or(authority);
+	// A redirect has no business carrying a user name, so an `@` before the path is refused.
+	if authority.contains('@') {
+		return None;
+	}
+	let hostport = authority;
 	let (host, port) = if let Some(v6) = hostport.strip_prefix('[') {
 		let (h, after) = v6.split_once(']')?;
 		(
@@ -286,5 +292,35 @@ mod tests {
 		assert!(!is_valid("http://app.test", &a, "http://2130706433/"));
 		assert!(is_valid("http://app.test", &a, "http://127.0.0.1:3000/"));
 		assert!(!is_valid("http://app.test", &a, "http://10.0.0.1/"));
+	}
+
+	#[test]
+	fn a_url_a_browser_reads_differently_is_refused() {
+		let none = allow(&[]);
+		let site = allow(&["https://app.test/**"]);
+		for evil in [
+			"https://evil.test\\@app.test",
+			"https://evil.test\\@app.test/cb",
+			"https://evil.test%5C@app.test",
+			"https://evil.test@app.test/",
+			"https://user:pass@app.test/",
+			"https://evil.test\t@app.test/",
+			"https://app.test\n.evil.test/",
+			"https://app.test\\.evil.test/",
+		] {
+			assert!(!is_valid("https://app.test", &none, evil), "{evil:?}");
+			assert!(!is_valid("https://app.test", &site, evil), "{evil:?}");
+		}
+		// An `@` after the host is part of the path and stays allowed.
+		assert!(is_valid(
+			"https://app.test",
+			&none,
+			"https://app.test/@someone"
+		));
+		assert!(is_valid(
+			"https://app.test",
+			&site,
+			"https://app.test/u/@someone?x=1"
+		));
 	}
 }

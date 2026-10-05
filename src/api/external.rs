@@ -760,10 +760,12 @@ pub(crate) async fn account_from_identity<C: deadpool_postgres::GenericClient>(
 		.unwrap_or("")
 		.to_string();
 
+	// Only an address the provider has verified may link to an existing account, whatever
+	// autoconfirm says; autoconfirm confirms a NEW account's address, below.
 	let verified: Vec<String> = profile
 		.emails
 		.iter()
-		.filter(|(_, v, _)| *v || cfg.autoconfirm)
+		.filter(|(_, v, _)| *v)
 		.map(|(e, _, _)| e.to_lowercase())
 		.collect();
 	let mut candidate = profile
