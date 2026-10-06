@@ -528,7 +528,7 @@ pub(crate) mod tests {
 		assert_eq!(c["exp"], 4600);
 		assert!(
 			c.get("role").is_none(),
-			"a database token never has role (O9)"
+			"a database token never has role"
 		);
 		// The session verifier refuses it: another algorithm, never the session secret.
 		assert!(crate::jwt::verify(&t, "a-secret-that-is-long-enough-for-hs256-use").is_err());
