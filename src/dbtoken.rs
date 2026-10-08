@@ -526,10 +526,7 @@ pub(crate) mod tests {
 		assert_eq!(c["token_use"], "db");
 		assert_eq!(c["db_role"], "u_alice");
 		assert_eq!(c["exp"], 4600);
-		assert!(
-			c.get("role").is_none(),
-			"a database token never has role"
-		);
+		assert!(c.get("role").is_none(), "a database token never has role");
 		// The session verifier refuses it: another algorithm, never the session secret.
 		assert!(crate::jwt::verify(&t, "a-secret-that-is-long-enough-for-hs256-use").is_err());
 		// A changed byte does not verify.
