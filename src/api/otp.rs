@@ -233,7 +233,7 @@ async fn passwordless_signup(
 			let mut app_meta = Map::new();
 			app_meta.insert("provider".into(), json!("email"));
 			app_meta.insert("providers".into(), json!(["email"]));
-			nu.server_data = Some(app_meta);
+			nu.app_metadata = Some(app_meta);
 			super::signup::create_user(&tx, &mut nu, &cfg.jwt_default_group).await?;
 			nu
 		}

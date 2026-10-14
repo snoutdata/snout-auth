@@ -156,7 +156,7 @@ async fn update(app: &App, req: &Req) -> ApiResult<Response> {
 	let current_password = p.str("current_password")?;
 	let nonce = p.str("nonce")?;
 	let data = p.map("data")?;
-	let app_data = p.map("server_data")?;
+	let app_data = p.map("app_metadata")?;
 	let phone = p.str("phone")?;
 	let challenge = p.str("code_challenge")?;
 	let challenge_method = p.str("code_challenge_method")?;
@@ -178,7 +178,7 @@ async fn update(app: &App, req: &Req) -> ApiResult<Response> {
 	if app_data.is_some() {
 		return Err(ApiError::forbidden(
 			"not_admin",
-			"Updating server_data requires admin privileges",
+			"Updating app_metadata requires admin privileges",
 		));
 	}
 	let changing_secret = password.as_deref().is_some_and(|p| !p.is_empty())

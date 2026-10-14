@@ -928,7 +928,7 @@ mod tests {
 
 	#[test]
 	fn hosts() {
-		assert_eq!(host_of("http://api.test/v1/identity"), "api.test");
+		assert_eq!(host_of("http://api.test/auth/v1"), "api.test");
 		assert_eq!(host_of("https://u:p@api.test:8443/x"), "api.test");
 		assert_eq!(host_of("http://[::1]:9999/"), "::1");
 		assert_eq!(host_of("http://[::1]/"), "[::1]");

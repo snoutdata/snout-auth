@@ -1,4 +1,4 @@
-//! `snout_identity.mfa_factors` and `snout_identity.mfa_challenges`: a second factor, and each request to prove it.
+//! `auth.mfa_factors` and `auth.mfa_challenges`: a second factor, and each request to prove it.
 
 use crate::db::Cached;
 use deadpool_postgres::GenericClient;

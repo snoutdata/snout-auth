@@ -1,5 +1,5 @@
-//! `snout_identity.one_time_tokens` (a mailed link or code waiting to be used), `snout_identity.flow_state` (a
-//! sign-in in progress under PKCE or through a provider) and `snout_identity.audit_log_entries`.
+//! `auth.one_time_tokens` (a mailed link or code waiting to be used), `auth.flow_state` (a
+//! sign-in in progress under PKCE or through a provider) and `auth.audit_log_entries`.
 
 use crate::db::Cached;
 use deadpool_postgres::GenericClient;

@@ -761,7 +761,7 @@ fn actor(u: &user::User) -> (String, Option<Value>) {
 		u.email.clone()
 	};
 	let name = u
-		.profile_data
+		.user_metadata
 		.as_ref()
 		.and_then(|m| m.get("full_name"))
 		.cloned();

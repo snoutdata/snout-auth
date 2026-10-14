@@ -893,7 +893,7 @@ pub(crate) async fn account_from_identity<C: deadpool_postgres::GenericClient>(
 			let mut app_meta = Map::new();
 			app_meta.insert("provider".into(), json!(provider_name));
 			app_meta.insert("providers".into(), json!([provider_name]));
-			nu.server_data = Some(app_meta);
+			nu.app_metadata = Some(app_meta);
 			super::signup::create_user(tx, &mut nu, &cfg.jwt_default_group).await?;
 			let i = identity::insert(tx, nu.id, provider_name, data.clone())
 				.await

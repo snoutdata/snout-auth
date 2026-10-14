@@ -282,7 +282,7 @@ pub fn data(
 	token_hash: &str,
 	confirmation_url: &str,
 	redirect_to: &str,
-	profile_data: &Value,
+	user_metadata: &Value,
 ) -> Value {
 	json!({
 		"SiteURL": site_url,
@@ -290,7 +290,7 @@ pub fn data(
 		"Email": email,
 		"Token": token,
 		"TokenHash": token_hash,
-		"Data": profile_data,
+		"Data": user_metadata,
 		"RedirectTo": redirect_to,
 	})
 }

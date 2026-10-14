@@ -1,4 +1,4 @@
-//! `snout_identity.provider_links`: one way a user signs in (their email, a Google account, a SAML provider).
+//! `auth.identities`: one way a user signs in (their email, a Google account, a SAML provider).
 
 use crate::db::Cached;
 use deadpool_postgres::GenericClient;

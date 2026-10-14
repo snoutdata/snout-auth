@@ -268,7 +268,7 @@ async fn create(app: &App, req: &Req) -> ApiResult<Response> {
 			.await
 			.unwrap_or_default()
 	};
-	let mut u = user::new_user(&email, "", Some(hash), &aud, p.map("profile_data")?);
+	let mut u = user::new_user(&email, "", Some(hash), &aud, p.map("user_metadata")?);
 	let id = p.str("id")?;
 	if !id.is_empty() {
 		let parsed = Uuid::parse_str(&id).map_err(|_| {
@@ -285,7 +285,7 @@ async fn create(app: &App, req: &Req) -> ApiResult<Response> {
 	let mut app_meta = Map::new();
 	app_meta.insert("provider".into(), json!("email"));
 	app_meta.insert("providers".into(), json!(["email"]));
-	u.server_data = Some(app_meta);
+	u.app_metadata = Some(app_meta);
 	let ban = ban_duration(&p.str("ban_duration")?)?;
 
 	let tx = conn
@@ -317,7 +317,7 @@ async fn create(app: &App, req: &Req) -> ApiResult<Response> {
 		user::update(&tx, &mut u, &["role"])
 			.await
 			.map_err(db("Database error creating new user"))?;
-		if let Some(am) = p.map("server_data")? {
+		if let Some(am) = p.map("app_metadata")? {
 			u.merge_app_metadata(&am);
 			user::update(&tx, &mut u, &["raw_app_meta_data"])
 				.await
@@ -457,13 +457,13 @@ async fn update(app: &App, req: &Req, id: &str) -> ApiResult<Response> {
 		if adding_first_password {
 			ensure_email_identity(&tx, &mut u).await?;
 		}
-		if let Some(am) = p.map("server_data")? {
+		if let Some(am) = p.map("app_metadata")? {
 			u.merge_app_metadata(&am);
 			user::update(&tx, &mut u, &["raw_app_meta_data"])
 				.await
 				.map_err(db("Error updating user"))?;
 		}
-		if let Some(um) = p.map("profile_data")? {
+		if let Some(um) = p.map("user_metadata")? {
 			u.merge_user_metadata(&um);
 			user::update(&tx, &mut u, &["raw_user_meta_data"])
 				.await
@@ -616,8 +616,8 @@ async fn soft_delete<C: GenericClient>(tx: &C, mut u: User) -> ApiResult<()> {
 	u.email_change_token_new.clear();
 	u.phone_change_token.clear();
 	u.deleted_at = Some(crate::json::now());
-	u.profile_data = Some(Map::new());
-	u.server_data = Some(Map::new());
+	u.user_metadata = Some(Map::new());
+	u.app_metadata = Some(Map::new());
 	user::update(
 		tx,
 		&mut u,
@@ -813,7 +813,7 @@ pub async fn invite(axum::extract::State(app): Shared, req: Req) -> Response {
 				let mut app_meta = Map::new();
 				app_meta.insert("provider".into(), json!("email"));
 				app_meta.insert("providers".into(), json!(["email"]));
-				nu.server_data = Some(app_meta);
+				nu.app_metadata = Some(app_meta);
 				super::signup::create_user(&tx, &mut nu, &app.config.jwt_default_group).await?;
 				let i = identity::insert(
 					&tx,
@@ -931,7 +931,7 @@ async fn generate(app: &App, req: &Req) -> ApiResult<Response> {
 				let mut app_meta = Map::new();
 				app_meta.insert("provider".into(), json!("email"));
 				app_meta.insert("providers".into(), json!(["email"]));
-				nu.server_data = Some(app_meta);
+				nu.app_metadata = Some(app_meta);
 				super::signup::create_user(&tx, &mut nu, &cfg.jwt_default_group).await?;
 				let i = identity::insert(
 					&tx,

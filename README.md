@@ -17,7 +17,7 @@ server of the same API are read as they are.
   with a reuse window, and sessions that can be time-boxed, expired on inactivity, or limited to
   one per user.
 - **Guests.** When switched on, a sign-up with no address is a guest: a real session (so
-  `snout_identity.user_id()` works in a policy) whose token carries `is_anonymous: true`. Adding an address with
+  `auth.uid()` works in a policy) whose token carries `is_anonymous: true`. Adding an address with
   `PUT /user` makes the guest a full account with the same id.
 - **Multi-factor.** TOTP enrolment, challenge and verification, with assurance levels (`aal1`,
   `aal2`) in every token.
@@ -37,7 +37,7 @@ server of the same API are read as they are.
 AUTH_DB_DATABASE_URL=postgres://auth_admin:…@db:5432/app \
 AUTH_JWT_SECRET=… \
 AUTH_SITE_URL=https://app.example.com \
-AUTH_API_EXTERNAL_URL=https://api.example.com/v1/identity \
+AUTH_API_EXTERNAL_URL=https://api.example.com/auth/v1 \
 snout-auth
 ```
 
@@ -60,9 +60,9 @@ Durations are written `10s`, `5m`, `1h30m`.
 | `DB_MAX_POOL_SIZE` | `10` | Connections held at most. |
 | `JWT_SECRET` | required | HS256 key for access tokens, at least 32 characters. |
 | `JWT_EXP` | `3600` | Access token lifetime, in seconds. |
-| `JWT_AUD` / `JWT_ISSUER` | `snout_member` / empty | Claims written into every token. |
-| `JWT_DEFAULT_GROUP_NAME` | `snout_member` | The `role` claim of a signed-in user. |
-| `JWT_ADMIN_ROLES` | `snout_server` | Roles allowed on `/admin/*`, comma separated. |
+| `JWT_AUD` / `JWT_ISSUER` | `authenticated` / empty | Claims written into every token. |
+| `JWT_DEFAULT_GROUP_NAME` | `authenticated` | The `role` claim of a signed-in user. |
+| `JWT_ADMIN_ROLES` | `service_role` | Roles allowed on `/admin/*`, comma separated. |
 | `SITE_URL` | required | Where users land after a link. |
 | `API_EXTERNAL_URL` | `SITE_URL` | This server's public address, for links and callbacks. |
 | `URI_ALLOW_LIST` | empty | Other redirect targets allowed, comma separated globs (`https://*.example.com/**`). |

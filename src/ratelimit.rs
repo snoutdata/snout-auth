@@ -95,7 +95,7 @@ impl Limits {
 			recover: per_5m(cfg.rate_otp),
 			resend: per_5m(cfg.rate_otp),
 			signups: per_5m(cfg.rate_otp),
-			// Per hour, as upstream counts it: each one is a row in the project's own `snout_identity.people`.
+			// Per hour, as upstream counts it: each one is a row in the project's own `auth.users`.
 			anonymous: Limiter::new(
 				cfg.rate_anonymous,
 				Duration::from_secs(3600),

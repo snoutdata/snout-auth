@@ -9,7 +9,7 @@
 //! **A database token can never pass for a session token, in either direction.** It is signed with its own ES256 key, never the session secret, and that key is
 //! published at its own key set, never at `/.well-known/jwks.json`; it carries
 //! `"token_use": "db"` and its Postgres role in `db_role`, never `role`; and its audience is the
-//! project's ref, never `snout_member`. So `jwt::verify` refuses it (wrong algorithm), the data
+//! project's ref, never `authenticated`. So `jwt::verify` refuses it (wrong algorithm), the data
 //! API reads no role from it, and a session token is refused by a database (no `db_role`).
 
 use std::time::Duration;
@@ -502,7 +502,7 @@ pub(crate) mod tests {
 	fn a_token_is_es256_names_its_key_and_verifies() {
 		let ks = keyset(&["db-1"], None).unwrap();
 		let g = Grant {
-			issuer: "https://issuer.test/v1/identity",
+			issuer: "https://issuer.test/auth/v1",
 			user_id: "6b0e8f4a-0000-4000-8000-000000000001",
 			email: "a@example.com",
 			project_ref: "abcdefghijklm",
@@ -689,11 +689,11 @@ pub(crate) mod tests {
 
 	#[test]
 	fn discovery_names_the_device_grant() {
-		let d = discovery("https://accounts.snoutdata.com/v1/identity");
-		assert_eq!(d["issuer"], "https://accounts.snoutdata.com/v1/identity");
+		let d = discovery("https://accounts.snoutdata.com/auth/v1");
+		assert_eq!(d["issuer"], "https://accounts.snoutdata.com/auth/v1");
 		assert_eq!(
 			d["device_authorization_endpoint"],
-			"https://accounts.snoutdata.com/v1/identity/db/device"
+			"https://accounts.snoutdata.com/auth/v1/db/device"
 		);
 		assert_eq!(d["grant_types_supported"][0], DEVICE_GRANT);
 	}

@@ -1,4 +1,4 @@
-//! `snout_identity.people`: a person who can sign in.
+//! `auth.users`: a person who can sign in.
 
 use crate::db::Cached;
 use deadpool_postgres::GenericClient;
@@ -45,8 +45,8 @@ pub struct User {
 	pub reauthentication_token: String,
 	pub reauthentication_sent_at: Option<OffsetDateTime>,
 	pub last_sign_in_at: Option<OffsetDateTime>,
-	pub server_data: Option<Map<String, Value>>,
-	pub profile_data: Option<Map<String, Value>>,
+	pub app_metadata: Option<Map<String, Value>>,
+	pub user_metadata: Option<Map<String, Value>>,
 	pub created_at: OffsetDateTime,
 	pub updated_at: OffsetDateTime,
 	pub banned_until: Option<OffsetDateTime>,
@@ -110,8 +110,8 @@ impl User {
 			reauthentication_token: text(row, "reauthentication_token"),
 			reauthentication_sent_at: row.get("reauthentication_sent_at"),
 			last_sign_in_at: row.get("last_sign_in_at"),
-			server_data: object(row, "raw_app_meta_data"),
-			profile_data: object(row, "raw_user_meta_data"),
+			app_metadata: object(row, "raw_app_meta_data"),
+			user_metadata: object(row, "raw_user_meta_data"),
 			created_at: row
 				.try_get::<_, Option<OffsetDateTime>>("created_at")
 				.ok()
@@ -158,13 +158,13 @@ impl User {
 	}
 
 	pub fn app_metadata_value(&self) -> Value {
-		self.server_data
+		self.app_metadata
 			.clone()
 			.map(|m| sorted(Value::Object(m)))
 			.unwrap_or(Value::Null)
 	}
 	pub fn user_metadata_value(&self) -> Value {
-		self.profile_data
+		self.user_metadata
 			.clone()
 			.map(|m| sorted(Value::Object(m)))
 			.unwrap_or(Value::Null)
@@ -198,8 +198,8 @@ impl User {
 			self.reauthentication_sent_at,
 		);
 		put_time(&mut m, "last_sign_in_at", self.last_sign_in_at);
-		m.insert("server_data".into(), self.app_metadata_value());
-		m.insert("profile_data".into(), self.user_metadata_value());
+		m.insert("app_metadata".into(), self.app_metadata_value());
+		m.insert("user_metadata".into(), self.user_metadata_value());
 		if !self.factors.is_empty() {
 			m.insert(
 				"factors".into(),
@@ -220,11 +220,11 @@ impl User {
 
 	/// Merge `updates` into the user metadata: a null value removes the key.
 	pub fn merge_user_metadata(&mut self, updates: &Map<String, Value>) {
-		let m = self.profile_data.get_or_insert_with(Map::new);
+		let m = self.user_metadata.get_or_insert_with(Map::new);
 		merge(m, updates);
 	}
 	pub fn merge_app_metadata(&mut self, updates: &Map<String, Value>) {
-		let m = self.server_data.get_or_insert_with(Map::new);
+		let m = self.app_metadata.get_or_insert_with(Map::new);
 		merge(m, updates);
 	}
 }
@@ -340,8 +340,8 @@ pub async fn insert<C: GenericClient>(db: &C, u: &User) -> Result<(), tokio_post
 	} else {
 		Some(u.phone.as_str())
 	};
-	let app = u.server_data.clone().map(Value::Object);
-	let user_meta = u.profile_data.clone().map(Value::Object);
+	let app = u.app_metadata.clone().map(Value::Object);
+	let user_meta = u.user_metadata.clone().map(Value::Object);
 	db.exec(
 		"insert into users (instance_id, id, aud, role, email, encrypted_password, email_confirmed_at, invited_at, \
 		 confirmation_token, confirmation_sent_at, recovery_token, recovery_sent_at, email_change_token_new, email_change, \
@@ -409,8 +409,8 @@ pub async fn update<C: GenericClient>(
 			"reauthentication_token" => Box::new(u.reauthentication_token.clone()),
 			"reauthentication_sent_at" => Box::new(u.reauthentication_sent_at),
 			"last_sign_in_at" => Box::new(u.last_sign_in_at),
-			"raw_app_meta_data" => Box::new(u.server_data.clone().map(Value::Object)),
-			"raw_user_meta_data" => Box::new(u.profile_data.clone().map(Value::Object)),
+			"raw_app_meta_data" => Box::new(u.app_metadata.clone().map(Value::Object)),
+			"raw_user_meta_data" => Box::new(u.user_metadata.clone().map(Value::Object)),
 			"banned_until" => Box::new(u.banned_until),
 			"deleted_at" => Box::new(u.deleted_at),
 			"is_anonymous" => Box::new(u.is_anonymous),
@@ -485,8 +485,8 @@ pub fn new_user(
 		reauthentication_token: String::new(),
 		reauthentication_sent_at: None,
 		last_sign_in_at: None,
-		server_data: Some(Map::new()),
-		profile_data: Some(data.unwrap_or_default()),
+		app_metadata: Some(Map::new()),
+		user_metadata: Some(data.unwrap_or_default()),
 		created_at: now,
 		updated_at: now,
 		banned_until: None,

@@ -620,13 +620,13 @@ impl Config {
 			jwt_secret,
 			jwt_exp: env.int("JWT_EXP", 3600)?,
 			jwt_issuer: env.string("JWT_ISSUER", ""),
-			jwt_aud: env.string("JWT_AUD", "snout_member"),
+			jwt_aud: env.string("JWT_AUD", "authenticated"),
 			// An empty group would make a user's role the empty string, which no database has.
-			jwt_default_group: env.string("JWT_DEFAULT_GROUP_NAME", "snout_member"),
+			jwt_default_group: env.string("JWT_DEFAULT_GROUP_NAME", "authenticated"),
 			jwt_admin_roles: {
 				let roles = env.list("JWT_ADMIN_ROLES");
 				if roles.is_empty() {
-					vec!["snout_server".into()]
+					vec!["service_role".into()]
 				} else {
 					roles
 				}
@@ -816,7 +816,7 @@ mod tests {
 		m.insert("AUTH_DATABASE_TOKENS_ENABLED".into(), "true".into());
 		m.insert(
 			"AUTH_DATABASE_TOKENS_ISSUER".into(),
-			"https://accounts.example.com/v1/identity".into(),
+			"https://accounts.example.com/auth/v1".into(),
 		);
 		m.insert(
 			"AUTH_DATABASE_TOKENS_KEYS".into(),
@@ -853,7 +853,7 @@ mod tests {
 			("AUTH_DATABASE_TOKENS_ISSUER", ""),
 			(
 				"AUTH_DATABASE_TOKENS_ISSUER",
-				"https://accounts.example.com/v1/identity/",
+				"https://accounts.example.com/auth/v1/",
 			),
 			("AUTH_DATABASE_TOKENS_ISSUER", "ftp://x"),
 			("AUTH_DATABASE_TOKENS_KEYS", ""),

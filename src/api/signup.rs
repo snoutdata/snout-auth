@@ -195,7 +195,7 @@ async fn handle(app: &App, req: &Req) -> ApiResult<Response> {
 			let mut app_meta = Map::new();
 			app_meta.insert("provider".into(), json!("email"));
 			app_meta.insert("providers".into(), json!(["email"]));
-			nu.server_data = Some(app_meta);
+			nu.app_metadata = Some(app_meta);
 			create_user(&tx, &mut nu, &cfg.jwt_default_group).await?;
 			nu
 		}
@@ -293,14 +293,14 @@ async fn handle(app: &App, req: &Req) -> ApiResult<Response> {
 		.await
 		.map_err(db("Database error saving new user"))?;
 	if u.invited_at.is_some() {
-		u.profile_data = Some(Map::new());
+		u.user_metadata = Some(Map::new());
 		u.identities.clear();
 	}
 	Ok(crate::json::ok(&u.to_json()))
 }
 
 /// A guest: a user with no email, no phone and no password, signed in at once. The session is a
-/// real one (`snout_identity.user_id()` works in a policy) and its token says `is_anonymous: true`. The guest
+/// real one (`auth.uid()` works in a policy) and its token says `is_anonymous: true`. The guest
 /// becomes a full account by adding an address with `PUT /user`, keeping the same id.
 async fn anonymous(app: &App, req: &Req, data: Map<String, Value>) -> ApiResult<Response> {
 	let cfg = &app.config;
@@ -325,7 +325,7 @@ async fn anonymous(app: &App, req: &Req, data: Map<String, Value>) -> ApiResult<
 		.transaction()
 		.await
 		.map_err(db("Database error creating anonymous user"))?;
-	// No identity and no provider in `server_data`, and nothing on the audit log, as upstream:
+	// No identity and no provider in `app_metadata`, and nothing on the audit log, as upstream:
 	// a guest is visible by `is_anonymous` and by the `anonymous` method in its token's `amr`.
 	let mut u = user::new_user("", "", None, &aud, Some(data));
 	u.is_anonymous = true;
@@ -367,12 +367,12 @@ fn obfuscated(u: &user::User, email: &str, aud: &str, data: &Map<String, Value>)
 	fake.phone_confirmed_at = None;
 	fake.identities.clear();
 	fake.factors.clear();
-	fake.profile_data = Some(data.clone());
+	fake.user_metadata = Some(data.clone());
 	fake.aud = aud.to_string();
 	let mut app_meta = Map::new();
 	app_meta.insert("provider".into(), json!("email"));
 	app_meta.insert("providers".into(), json!(["email"]));
-	fake.server_data = Some(app_meta);
+	fake.app_metadata = Some(app_meta);
 	fake.email = email.to_string();
 	fake.phone.clear();
 	fake.to_json()
@@ -445,7 +445,7 @@ pub async fn remove_unconfirmed_identities<C: deadpool_postgres::GenericClient>(
 			.await
 			.map_err(db("Database error updating user"))?;
 	}
-	u.profile_data = Some(keep.identity_data.clone());
+	u.user_metadata = Some(keep.identity_data.clone());
 	user::update(tx, u, &["raw_user_meta_data"])
 		.await
 		.map_err(db("Database error updating user"))?;
@@ -457,7 +457,7 @@ pub async fn remove_unconfirmed_identities<C: deadpool_postgres::GenericClient>(
 	set_providers(tx, u).await
 }
 
-/// `server_data.providers` from the user's identities, and `provider` the first of them.
+/// `app_metadata.providers` from the user's identities, and `provider` the first of them.
 pub async fn set_providers<C: deadpool_postgres::GenericClient>(
 	tx: &C,
 	u: &mut user::User,

@@ -1,4 +1,4 @@
-//! `snout_identity.sessions`, `snout_identity.refresh_tokens` and `snout_identity.mfa_amr_claims`: a signed-in device, the
+//! `auth.sessions`, `auth.refresh_tokens` and `auth.mfa_amr_claims`: a signed-in device, the
 //! tokens that renew it, and the record of how it was authenticated.
 
 use crate::db::Cached;

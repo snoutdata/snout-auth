@@ -133,8 +133,8 @@ pub fn access_claims(
 	iat: i64,
 	email: &str,
 	phone: &str,
-	server_data: &Value,
-	profile_data: &Value,
+	app_metadata: &Value,
+	user_metadata: &Value,
 	role: &str,
 	aal: &str,
 	amr: &Value,
@@ -152,8 +152,8 @@ pub fn access_claims(
 	m.insert("iat".into(), json!(iat));
 	m.insert("email".into(), json!(email));
 	m.insert("phone".into(), json!(phone));
-	m.insert("server_data".into(), server_data.clone());
-	m.insert("profile_data".into(), profile_data.clone());
+	m.insert("app_metadata".into(), app_metadata.clone());
+	m.insert("user_metadata".into(), user_metadata.clone());
 	m.insert("role".into(), json!(role));
 	if !aal.is_empty() {
 		m.insert("aal".into(), json!(aal));

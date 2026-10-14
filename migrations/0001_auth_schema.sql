@@ -2,7 +2,7 @@
 --
 -- Written once, as the whole schema, in the shape the applications already on it expect: the
 -- tables, columns, types, constraint and index names below are a contract (applications write
--- policies and triggers against `snout_identity.people`, and an earlier auth server may still run against the
+-- policies and triggers against `auth.users`, and an earlier auth server may still run against the
 -- same database), so they are kept exactly as they are and are not renamed or tidied.
 --
 -- It runs in one transaction, as the role the server connects as (so that role owns everything),

@@ -585,7 +585,7 @@ mod tests {
 
 	#[test]
 	fn the_discovery_document_is_what_libpq_reads() {
-		let d = dbtoken::discovery("http://issuer.test/v1/identity");
+		let d = dbtoken::discovery("http://issuer.test/auth/v1");
 		for f in [
 			"issuer",
 			"token_endpoint",
@@ -594,7 +594,7 @@ mod tests {
 		] {
 			assert!(
 				d[f].as_str()
-					.is_some_and(|v| v.starts_with("http://issuer.test/v1/identity")),
+					.is_some_and(|v| v.starts_with("http://issuer.test/auth/v1")),
 				"{f}"
 			);
 		}
