@@ -137,11 +137,11 @@ pub async fn enroll(axum::extract::State(app): Shared, req: Req) -> Response {
 		};
 		let mut conn = app.pool.get().await.map_err(super::pool_error)?;
 		conn.execute(
-			&format!(
+			&*crate::db::sql(&format!(
 				"delete from mfa_factors where status != 'verified' and not exists (select * from mfa_challenges where mfa_factors.id = mfa_challenges.factor_id) \
 				 and created_at + interval '{} seconds' < current_timestamp",
 				UNVERIFIED_FACTOR_LIFETIME.as_secs()
-			),
+			)),
 			&[],
 		)
 		.await
@@ -491,7 +491,7 @@ pub async fn downgrade_sessions<C: GenericClient>(
 ) -> ApiResult<()> {
 	let sessions: Vec<Uuid> = tx
 		.query(
-			"select id from sessions where factor_id = $1",
+			&*crate::db::sql("select id from sessions where factor_id = $1"),
 			&[&factor_id],
 		)
 		.await
@@ -501,14 +501,18 @@ pub async fn downgrade_sessions<C: GenericClient>(
 		.collect();
 	for s in sessions {
 		tx.execute(
-			"delete from mfa_amr_claims where session_id = $1 and authentication_method = 'totp'",
+			&*crate::db::sql(
+				"delete from mfa_amr_claims where session_id = $1 and authentication_method = 'totp'",
+			),
 			&[&s],
 		)
 		.await
 		.map_err(db("Database error downgrading sessions"))?;
 	}
 	tx.execute(
-		"update sessions set aal = 'aal1', factor_id = null where user_id = $1 and factor_id = $2",
+		&*crate::db::sql(
+			"update sessions set aal = 'aal1', factor_id = null where user_id = $1 and factor_id = $2",
+		),
 		&[&user_id, &factor_id],
 	)
 	.await

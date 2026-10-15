@@ -329,7 +329,7 @@ async fn consume(
 	if let Some(mut f) = flow.filter(|f| f.is_pkce()) {
 		let locked = tx
 			.query_opt(
-				"select user_id from flow_state where id = $1 for update",
+				&*crate::db::sql("select user_id from flow_state where id = $1 for update"),
 				&[&f.id],
 			)
 			.await

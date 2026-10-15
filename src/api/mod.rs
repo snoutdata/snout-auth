@@ -197,12 +197,34 @@ impl Req {
 	}
 }
 
+/// The new name a request body may give an old field: `profile_data` for `data` and
+/// `user_metadata` (the person's own data), `server_data` for `app_metadata`.
+pub fn field_alias(key: &str) -> Option<&'static str> {
+	if key.eq_ignore_ascii_case("data") {
+		return crate::layout::other_claim("user_metadata");
+	}
+	CLAIM_FIELDS
+		.iter()
+		.find(|old| key.eq_ignore_ascii_case(old))
+		.and_then(|old| crate::layout::other_claim(old))
+}
+
+const CLAIM_FIELDS: [&str; 2] = ["user_metadata", "app_metadata"];
+
 /// A request body as the handlers read it: missing and `null` are both "not given", and a value
 /// of the wrong type is refused with the field's name.
 pub struct Params(pub Map<String, Value>);
 
 impl Params {
 	fn find(&self, key: &str) -> Option<&Value> {
+		self.find_exactly(key).or_else(|| {
+			// The new layout's name for the same field (the own layout), read when
+			// the old one is absent: the old name wins when a body carries both.
+			field_alias(key).and_then(|alias| self.find_exactly(alias))
+		})
+	}
+
+	fn find_exactly(&self, key: &str) -> Option<&Value> {
 		self.0.get(key).or_else(|| {
 			self.0
 				.iter()
@@ -398,7 +420,12 @@ pub async fn require_admin(app: &App, req: &Req) -> ApiResult<Map<String, Value>
 		}
 	}
 	let role = crate::jwt::string_claim(&claims, "role");
-	if app.config.jwt_admin_roles.iter().any(|r| r == role) {
+	if app
+		.config
+		.jwt_admin_roles
+		.iter()
+		.any(|r| crate::layout::same_role(r, role))
+	{
 		Ok(claims)
 	} else {
 		Err(
@@ -419,7 +446,11 @@ pub fn request_aud(app: &App, req: &Req, claims: Option<&Map<String, Value>>) ->
 	}
 	if let Some(c) = claims {
 		let role = crate::jwt::string_claim(c, "role");
-		if !app.config.jwt_admin_roles.iter().any(|r| r == role)
+		if !app
+			.config
+			.jwt_admin_roles
+			.iter()
+			.any(|r| crate::layout::same_role(r, role))
 			&& let Some(a) = crate::jwt::audiences(c).into_iter().find(|a| !a.is_empty())
 		{
 			return a;
@@ -538,7 +569,58 @@ async fn not_enabled(req: Req) -> Response {
 	e.render(&req.headers)
 }
 
+/// The new layout's routes (the own layout), each the old route it stands for.
+/// A path at or under the new name is served exactly as the old one is: same handler, same
+/// limits, same answer. The old routes stay, and stay the default.
+pub const ROUTE_ALIASES: [(&str, &str); 15] = [
+	("/register", "/signup"),
+	("/session", "/token"),
+	("/sign-off", "/logout"),
+	("/person", "/user"),
+	("/reset", "/recover"),
+	("/confirm", "/verify"),
+	("/code", "/otp"),
+	("/link", "/magiclink"),
+	("/provider/start", "/authorize"),
+	("/provider/return", "/callback"),
+	("/config", "/settings"),
+	("/second-factors", "/factors"),
+	("/reconfirm", "/reauthenticate"),
+	("/operator/people", "/admin/users"),
+	("/sso/start", "/sso"),
+];
+
+/// The old route a new path stands for, its remainder kept. None for every other path.
+pub fn old_route(path: &str) -> Option<String> {
+	ROUTE_ALIASES.iter().find_map(|(new, old)| {
+		let rest = path.strip_prefix(new)?;
+		(rest.is_empty() || rest.starts_with('/')).then(|| format!("{old}{rest}"))
+	})
+}
+
+/// Rewrite a new route to its old one before anything routes it, the query kept.
+async fn alias_route(mut req: Request) -> Request {
+	if let Some(old) = old_route(req.uri().path()) {
+		let target = match req.uri().query() {
+			Some(q) => format!("{old}?{q}"),
+			None => old,
+		};
+		if let Ok(uri) = target.parse() {
+			*req.uri_mut() = uri;
+		}
+	}
+	req
+}
+
 pub fn router(app: Arc<App>) -> Router {
+	// The aliases are rewritten OUTSIDE the routes, so a new path reaches the same handler
+	// through the same middleware as the old one, and nothing below knows which was used.
+	Router::new()
+		.fallback_service(routes(app))
+		.layer(axum::middleware::map_request(alias_route))
+}
+
+fn routes(app: Arc<App>) -> Router {
 	let mut r = Router::new();
 	// Database tokens: routed only when switched on, so with them off every one of these paths
 	// falls through to the answer it gave before they existed.
@@ -696,4 +778,191 @@ pub fn redirect(to: &str, status: StatusCode) -> Response {
 		r.headers_mut().insert(header::LOCATION, v);
 	}
 	r
+}
+
+#[cfg(test)]
+mod layout_tests {
+	use super::*;
+	use std::collections::HashMap;
+	use tower::Service;
+
+	fn app() -> Arc<App> {
+		let mut m = HashMap::new();
+		for (k, v) in [
+			("AUTH_DB_DATABASE_URL", "postgres://x:y@127.0.0.1:1/x"),
+			("AUTH_SITE_URL", "http://app.test"),
+			(
+				"AUTH_JWT_SECRET",
+				"a-secret-of-at-least-thirty-two-characters",
+			),
+		] {
+			m.insert(k.to_string(), v.to_string());
+		}
+		let config = Arc::new(Config::from_env(&crate::config::Env::from_map(m)).unwrap());
+		let http = reqwest::Client::new();
+		Arc::new(App {
+			pool: crate::db::pool(&config.database_url, &config.namespace, 1).unwrap(),
+			mailer: Mailer::new(config.clone(), http.clone()).unwrap(),
+			limits: Limits::new(&config),
+			http,
+			saml: None,
+			oidc: Default::default(),
+			otp_guesses: Default::default(),
+			db_code_misses: Default::default(),
+			config,
+		})
+	}
+
+	async fn ask(app: &Arc<App>, method: &str, path: &str, auth: Option<&str>) -> (u16, Value) {
+		let mut b = axum::http::Request::builder().method(method).uri(path);
+		if let Some(t) = auth {
+			b = b.header("authorization", format!("Bearer {t}"));
+		}
+		let mut r = router(app.clone());
+		let res = r.call(b.body(Body::empty()).unwrap()).await.unwrap();
+		let status = res.status().as_u16();
+		let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+			.await
+			.unwrap();
+		let mut v: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+		// A server error carries a fresh id each time; everything else must match exactly.
+		if let Some(o) = v.as_object_mut() {
+			o.remove("error_id");
+		}
+		(status, v)
+	}
+
+	#[test]
+	fn every_new_route_names_its_old_one() {
+		assert_eq!(old_route("/register").as_deref(), Some("/signup"));
+		assert_eq!(old_route("/session").as_deref(), Some("/token"));
+		assert_eq!(
+			old_route("/second-factors/abc/verify").as_deref(),
+			Some("/factors/abc/verify")
+		);
+		assert_eq!(
+			old_route("/operator/people/abc/factors").as_deref(),
+			Some("/admin/users/abc/factors")
+		);
+		assert_eq!(old_route("/sso/start").as_deref(), Some("/sso"));
+		assert_eq!(old_route("/provider/return").as_deref(), Some("/callback"));
+		// Old routes, and names that only start the same, are left alone.
+		assert_eq!(old_route("/signup"), None);
+		assert_eq!(old_route("/sso/saml/acs"), None);
+		assert_eq!(old_route("/registered"), None);
+		assert_eq!(old_route("/health"), None);
+	}
+
+	#[tokio::test]
+	async fn a_new_route_answers_as_its_old_one() {
+		let app = app();
+		let not_found = ask(&app, "GET", "/no-such-route", None).await;
+		assert_eq!(not_found.0, 404);
+		for (method, new, old) in [
+			("POST", "/register", "/signup"),
+			(
+				"POST",
+				"/session?grant_type=password",
+				"/token?grant_type=password",
+			),
+			("POST", "/sign-off", "/logout"),
+			("GET", "/person", "/user"),
+			("POST", "/reset", "/recover"),
+			("GET", "/confirm", "/verify"),
+			("POST", "/code", "/otp"),
+			("POST", "/link", "/magiclink"),
+			("GET", "/provider/start", "/authorize"),
+			("GET", "/provider/return", "/callback"),
+			("GET", "/config", "/settings"),
+			("POST", "/second-factors", "/factors"),
+			(
+				"POST",
+				"/second-factors/x/challenge",
+				"/factors/x/challenge",
+			),
+			("GET", "/reconfirm", "/reauthenticate"),
+			("GET", "/operator/people", "/admin/users"),
+			("GET", "/operator/people/x", "/admin/users/x"),
+			("POST", "/sso/start", "/sso"),
+		] {
+			let a = ask(&app, method, new, None).await;
+			let b = ask(&app, method, old, None).await;
+			assert_eq!(a, b, "{method} {new} answers as {old}");
+			assert_ne!(a, not_found, "{method} {new} is routed");
+		}
+	}
+
+	#[tokio::test]
+	async fn via_names_the_grant() {
+		let app = app();
+		let unsupported = ask(&app, "POST", "/token", None).await;
+		for (via, grant) in [
+			("password", "password"),
+			("renew", "refresh_token"),
+			("pkce", "pkce"),
+			("id_token", "id_token"),
+		] {
+			let a = ask(&app, "POST", &format!("/session?via={via}"), None).await;
+			let b = ask(&app, "POST", &format!("/token?grant_type={grant}"), None).await;
+			let c = ask(&app, "POST", &format!("/token?via={via}"), None).await;
+			assert_eq!(a, b, "via={via}");
+			assert_eq!(c, b, "via={via} on the old route");
+			assert_ne!(a, unsupported, "via={via} is a grant");
+		}
+		// grant_type outranks via, and an unknown via is the unknown grant it always was.
+		assert_eq!(
+			ask(&app, "POST", "/session?grant_type=nope&via=password", None).await,
+			unsupported
+		);
+		assert_eq!(token::grant_for_via("renew"), "refresh_token");
+	}
+
+	#[tokio::test]
+	async fn a_server_token_in_either_name_is_an_admin() {
+		let app = app();
+		let exp = time::OffsetDateTime::now_utc().unix_timestamp() + 60;
+		let refused = ask(
+			&app,
+			"GET",
+			"/admin/audit",
+			Some(&crate::jwt::sign(
+				&serde_json::json!({"role": "snout_member", "exp": exp}),
+				&app.config.jwt_secret,
+			)),
+		)
+		.await;
+		assert_eq!(refused.0, 403);
+		for role in ["service_role", "snout_server"] {
+			let t = crate::jwt::sign(
+				&serde_json::json!({"role": role, "exp": exp}),
+				&app.config.jwt_secret,
+			);
+			let (status, _) = ask(&app, "GET", "/admin/audit", Some(&t)).await;
+			// Past the admin check: what answers is the database this test has none of.
+			assert_ne!(status, 403, "{role} is an admin");
+			assert_ne!(status, 401, "{role} is an admin");
+		}
+	}
+
+	#[test]
+	fn a_body_may_use_the_new_field_names() {
+		let p = Params(
+			serde_json::json!({"profile_data": {"a": 1}, "server_data": {"b": 2}})
+				.as_object()
+				.unwrap()
+				.clone(),
+		);
+		assert_eq!(p.map("data").unwrap().unwrap()["a"], 1);
+		assert_eq!(p.map("user_metadata").unwrap().unwrap()["a"], 1);
+		assert_eq!(p.map("app_metadata").unwrap().unwrap()["b"], 2);
+		// The old name wins when both are sent.
+		let both = Params(
+			serde_json::json!({"data": {"a": "old"}, "profile_data": {"a": "new"}})
+				.as_object()
+				.unwrap()
+				.clone(),
+		);
+		assert_eq!(both.map("data").unwrap().unwrap()["a"], "old");
+		assert_eq!(field_alias("email"), None);
+	}
 }

@@ -21,7 +21,7 @@ pub async fn token(axum::extract::State(app): Shared, req: Req) -> Response {
 }
 
 async fn grant(app: &App, req: &Req) -> ApiResult<Response> {
-	let grant_type = req.form_value("grant_type");
+	let grant_type = grant_of(req);
 	match grant_type.as_str() {
 		"password" | "refresh_token" | "id_token" | "pkce" => {}
 		_ => {
@@ -37,6 +37,24 @@ async fn grant(app: &App, req: &Req) -> ApiResult<Response> {
 		"refresh_token" => refresh(app, req).await,
 		"pkce" => pkce(app, req).await,
 		_ => super::external::id_token_grant(app, req).await,
+	}
+}
+
+/// The grant asked for: `grant_type`, else the new layout's `via` (the own layout),
+/// where `renew` is `refresh_token` and the rest keep their names.
+pub fn grant_of(req: &Req) -> String {
+	let grant_type = req.form_value("grant_type");
+	if !grant_type.is_empty() {
+		return grant_type;
+	}
+	grant_for_via(&req.form_value("via")).to_string()
+}
+
+/// `via=` to the `grant_type` it stands for.
+pub fn grant_for_via(via: &str) -> &str {
+	match via {
+		"renew" => "refresh_token",
+		other => other,
 	}
 }
 
@@ -699,7 +717,10 @@ pub fn token_response(access: &str, expires_at: i64, refresh: &str, u: &user::Us
 	);
 	m.insert("expires_at".into(), json!(expires_at));
 	m.insert("refresh_token".into(), json!(refresh));
-	m.insert("user".into(), u.to_json());
+	let person = u.to_json();
+	// `person` is the new layout's name for `user`, carried beside it until Phase 8.
+	m.insert("user".into(), person.clone());
+	m.insert("person".into(), person);
 	Value::Object(m)
 }
 
@@ -810,4 +831,27 @@ pub async fn audit<C: GenericClient>(
 	)
 	.await
 	.map_err(db("Database error creating audit log entry"))
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn a_session_names_its_person_both_ways() {
+		let mut data = Map::new();
+		data.insert("name".into(), json!("Ana"));
+		let u = user::new_user("a@b.c", "", None, "authenticated", Some(data));
+		let body = token_response("t", 0, "r", &u);
+		assert_eq!(body["user"], body["person"]);
+		assert_eq!(body["person"]["profile_data"]["name"], "Ana");
+		assert_eq!(
+			body["person"]["user_metadata"],
+			body["person"]["profile_data"]
+		);
+		assert_eq!(
+			body["person"]["app_metadata"],
+			body["person"]["server_data"]
+		);
+	}
 }

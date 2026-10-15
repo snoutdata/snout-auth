@@ -200,6 +200,9 @@ impl User {
 		put_time(&mut m, "last_sign_in_at", self.last_sign_in_at);
 		m.insert("app_metadata".into(), self.app_metadata_value());
 		m.insert("user_metadata".into(), self.user_metadata_value());
+		// The new layout's names beside them (the own layout), same values.
+		m.insert("server_data".into(), self.app_metadata_value());
+		m.insert("profile_data".into(), self.user_metadata_value());
 		if !self.factors.is_empty() {
 			m.insert(
 				"factors".into(),

@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use crate::db::Cached;
 
-const DDL: &str = "
+pub(crate) const DDL: &str = "
 create table if not exists {{namespace}}.database_device_codes (
 	id uuid primary key,
 	device_code_hash text not null,
@@ -57,7 +57,7 @@ pub async fn ensure(pool: &deadpool_postgres::Pool, namespace: &str) -> Result<(
 	)
 	.await
 	.map_err(|e| e.to_string())?;
-	tx.batch_execute(&DDL.replace("{{namespace}}", namespace))
+	tx.batch_execute(&crate::db::sql(&DDL.replace("{{namespace}}", namespace)))
 		.await
 		.map_err(|e| format!("cannot create {namespace}.database_device_codes: {e}"))?;
 	tx.commit().await.map_err(|e| e.to_string())

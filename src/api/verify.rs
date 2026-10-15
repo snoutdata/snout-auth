@@ -339,7 +339,9 @@ async fn email_change_verify<C: GenericClient>(
 		if matches(&u.email_change_token_current) || current.is_some() {
 			u.email_change_token_current.clear();
 			tx.execute(
-				"delete from one_time_tokens where token_type = 'email_change_token_current' and user_id = $1",
+				&*crate::db::sql(
+					"delete from one_time_tokens where token_type = 'email_change_token_current' and user_id = $1",
+				),
 				&[&u.id],
 			)
 			.await
@@ -347,7 +349,9 @@ async fn email_change_verify<C: GenericClient>(
 		} else if matches(&u.email_change_token_new) || new.is_some() {
 			u.email_change_token_new.clear();
 			tx.execute(
-				"delete from one_time_tokens where token_type = 'email_change_token_new' and user_id = $1",
+				&*crate::db::sql(
+					"delete from one_time_tokens where token_type = 'email_change_token_new' and user_id = $1",
+				),
 				&[&u.id],
 			)
 			.await

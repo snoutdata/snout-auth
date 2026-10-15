@@ -451,7 +451,7 @@ async fn finish(app: &App, req: &Req, flow: tok::FlowState) -> ApiResult<Respons
 		}
 		let now = crate::json::now();
 		tx.execute(
-			"update flow_state set provider_access_token = $1, provider_refresh_token = $2, user_id = $3, auth_code_issued_at = $4, updated_at = $4 where id = $5",
+			&*crate::db::sql("update flow_state set provider_access_token = $1, provider_refresh_token = $2, user_id = $3, auth_code_issued_at = $4, updated_at = $4 where id = $5"),
 			&[&access, &refresh, &u.id, &now, &f.id],
 		)
 		.await
@@ -805,13 +805,17 @@ pub(crate) async fn account_from_identity<C: deadpool_postgres::GenericClient>(
 		// and never to an account made any other way.
 		let similar: Vec<Uuid> = if sso {
 			tx.query(
-				"select distinct user_id from identities where email = any($1) and provider = $2",
+				&*crate::db::sql(
+					"select distinct user_id from identities where email = any($1) and provider = $2",
+				),
 				&[&verified, &provider_name],
 			)
 			.await
 		} else {
 			tx.query(
-				"select distinct user_id from identities where email = any($1) and provider not like 'sso:%'",
+				&*crate::db::sql(
+					"select distinct user_id from identities where email = any($1) and provider not like 'sso:%'",
+				),
 				&[&verified],
 			)
 			.await
@@ -825,7 +829,9 @@ pub(crate) async fn account_from_identity<C: deadpool_postgres::GenericClient>(
 		} else if similar.is_empty() {
 			let users: Vec<Uuid> = tx
 				.query(
-					"select id from users where email = any($1) and is_sso_user = false",
+					&*crate::db::sql(
+						"select id from users where email = any($1) and is_sso_user = false",
+					),
 					&[&verified],
 				)
 				.await
@@ -906,7 +912,7 @@ pub(crate) async fn account_from_identity<C: deadpool_postgres::GenericClient>(
 			i.identity_data = data.clone();
 			let now = crate::json::now();
 			tx.execute(
-				"update identities set identity_data = $1, last_sign_in_at = $2, updated_at = $2 where id = $3",
+				&*crate::db::sql("update identities set identity_data = $1, last_sign_in_at = $2, updated_at = $2 where id = $3"),
 				&[&Value::Object(data.clone()), &now, &i.id],
 			)
 			.await

@@ -1,15 +1,16 @@
--- snout-auth's schema: the `auth` tables a project's users, sessions and factors live in.
+-- snout-auth's schema: the `snout_identity` tables a project's people, sessions and factors live in.
 --
 -- Written once, as the whole schema, in the shape the applications already on it expect: the
--- tables, columns, types, constraint and index names below are a contract (applications write
--- policies and triggers against `auth.users`, and an earlier auth server may still run against the
--- same database), so they are kept exactly as they are and are not renamed or tidied.
+-- columns, types, constraint and index names below are a contract (applications write policies
+-- and triggers against `snout_identity.people`, and an earlier auth server may still run against
+-- the same database), so they are kept exactly as they are and are not tidied.
 --
 -- It runs in one transaction, as the role the server connects as (so that role owns everything),
--- into an `auth` schema the database's own bootstrap has already made. `{{namespace}}` is replaced
--- with the configured schema name before it runs. The four helper functions (`uid`, `role`,
--- `email`, `jwt`) are made by the database bootstrap, which is why they are only created here when
--- they are missing.
+-- into the schema the database's own bootstrap has already made. `{{namespace}}` is replaced with
+-- the configured schema name before it runs, and a database made before the own layout is given
+-- this file in that layout's names by the server. The four helper functions (`user_id`, `access`,
+-- `user_email`, `claims`) are made by the database bootstrap, which is why they are only created
+-- here when they are missing.
 
 create type {{namespace}}.aal_level as enum ('aal1', 'aal2', 'aal3');
 create type {{namespace}}.code_challenge_method as enum ('s256', 'plain');
@@ -31,32 +32,32 @@ create type {{namespace}}.one_time_token_type as enum (
 -- The claim helpers row-level-security policies call. Only when missing: the bootstrap owns them.
 do $helpers$
 begin
-	if to_regprocedure('{{namespace}}.uid()') is null then
-		create function {{namespace}}.uid() returns uuid language sql stable as $f$
+	if to_regprocedure('{{namespace}}.user_id()') is null then
+		create function {{namespace}}.user_id() returns uuid language sql stable as $f$
 			select coalesce(
 				nullif(current_setting('request.jwt.claim.sub', true), ''),
 				(nullif(current_setting('request.jwt.claims', true), '')::jsonb ->> 'sub')
 			)::uuid
 		$f$;
 	end if;
-	if to_regprocedure('{{namespace}}.role()') is null then
-		create function {{namespace}}.role() returns text language sql stable as $f$
+	if to_regprocedure('{{namespace}}.access()') is null then
+		create function {{namespace}}.access() returns text language sql stable as $f$
 			select coalesce(
 				nullif(current_setting('request.jwt.claim.role', true), ''),
 				(nullif(current_setting('request.jwt.claims', true), '')::jsonb ->> 'role')
 			)::text
 		$f$;
 	end if;
-	if to_regprocedure('{{namespace}}.email()') is null then
-		create function {{namespace}}.email() returns text language sql stable as $f$
+	if to_regprocedure('{{namespace}}.user_email()') is null then
+		create function {{namespace}}.user_email() returns text language sql stable as $f$
 			select coalesce(
 				nullif(current_setting('request.jwt.claim.email', true), ''),
 				(nullif(current_setting('request.jwt.claims', true), '')::jsonb ->> 'email')
 			)::text
 		$f$;
 	end if;
-	if to_regprocedure('{{namespace}}.jwt()') is null then
-		create function {{namespace}}.jwt() returns jsonb language sql stable as $f$
+	if to_regprocedure('{{namespace}}.claims()') is null then
+		create function {{namespace}}.claims() returns jsonb language sql stable as $f$
 			select coalesce(
 				nullif(current_setting('request.jwt.claim', true), ''),
 				nullif(current_setting('request.jwt.claims', true), '')
@@ -69,7 +70,7 @@ $helpers$;
 -- ---------------------------------------------------------------------------------------------
 -- Users and their identities.
 
-create table {{namespace}}.users (
+create table {{namespace}}.people (
 	instance_id uuid,
 	id uuid not null,
 	aud character varying(255),
@@ -107,20 +108,20 @@ create table {{namespace}}.users (
 	is_anonymous boolean default false not null,
 	constraint users_email_change_confirm_status_check check (((email_change_confirm_status >= 0) and (email_change_confirm_status <= 2)))
 );
-alter table only {{namespace}}.users add constraint users_pkey primary key (id);
-alter table only {{namespace}}.users add constraint users_phone_key unique (phone);
-create unique index users_email_partial_key on {{namespace}}.users using btree (email) where (is_sso_user = false);
-create index users_instance_id_email_idx on {{namespace}}.users using btree (instance_id, lower((email)::text));
-create index users_instance_id_idx on {{namespace}}.users using btree (instance_id);
-create index users_is_anonymous_idx on {{namespace}}.users using btree (is_anonymous);
+alter table only {{namespace}}.people add constraint users_pkey primary key (id);
+alter table only {{namespace}}.people add constraint users_phone_key unique (phone);
+create unique index users_email_partial_key on {{namespace}}.people using btree (email) where (is_sso_user = false);
+create index users_instance_id_email_idx on {{namespace}}.people using btree (instance_id, lower((email)::text));
+create index users_instance_id_idx on {{namespace}}.people using btree (instance_id);
+create index users_is_anonymous_idx on {{namespace}}.people using btree (is_anonymous);
 -- A token column holds either a token or a (hashed) numeric code; only tokens are unique.
-create unique index confirmation_token_idx on {{namespace}}.users using btree (confirmation_token) where ((confirmation_token)::text !~ '^[0-9 ]*$'::text);
-create unique index recovery_token_idx on {{namespace}}.users using btree (recovery_token) where ((recovery_token)::text !~ '^[0-9 ]*$'::text);
-create unique index email_change_token_current_idx on {{namespace}}.users using btree (email_change_token_current) where ((email_change_token_current)::text !~ '^[0-9 ]*$'::text);
-create unique index email_change_token_new_idx on {{namespace}}.users using btree (email_change_token_new) where ((email_change_token_new)::text !~ '^[0-9 ]*$'::text);
-create unique index reauthentication_token_idx on {{namespace}}.users using btree (reauthentication_token) where ((reauthentication_token)::text !~ '^[0-9 ]*$'::text);
+create unique index confirmation_token_idx on {{namespace}}.people using btree (confirmation_token) where ((confirmation_token)::text !~ '^[0-9 ]*$'::text);
+create unique index recovery_token_idx on {{namespace}}.people using btree (recovery_token) where ((recovery_token)::text !~ '^[0-9 ]*$'::text);
+create unique index email_change_token_current_idx on {{namespace}}.people using btree (email_change_token_current) where ((email_change_token_current)::text !~ '^[0-9 ]*$'::text);
+create unique index email_change_token_new_idx on {{namespace}}.people using btree (email_change_token_new) where ((email_change_token_new)::text !~ '^[0-9 ]*$'::text);
+create unique index reauthentication_token_idx on {{namespace}}.people using btree (reauthentication_token) where ((reauthentication_token)::text !~ '^[0-9 ]*$'::text);
 
-create table {{namespace}}.identities (
+create table {{namespace}}.provider_links (
 	provider_id text not null,
 	user_id uuid not null,
 	identity_data jsonb not null,
@@ -131,10 +132,10 @@ create table {{namespace}}.identities (
 	email text generated always as (lower((identity_data ->> 'email'::text))) stored,
 	id uuid default gen_random_uuid() not null
 );
-alter table only {{namespace}}.identities add constraint identities_pkey primary key (id);
-alter table only {{namespace}}.identities add constraint identities_provider_id_provider_unique unique (provider_id, provider);
-create index identities_email_idx on {{namespace}}.identities using btree (email text_pattern_ops);
-create index identities_user_id_idx on {{namespace}}.identities using btree (user_id);
+alter table only {{namespace}}.provider_links add constraint identities_pkey primary key (id);
+alter table only {{namespace}}.provider_links add constraint identities_provider_id_provider_unique unique (provider_id, provider);
+create index identities_email_idx on {{namespace}}.provider_links using btree (email text_pattern_ops);
+create index identities_user_id_idx on {{namespace}}.provider_links using btree (user_id);
 
 create table {{namespace}}.instances (
 	id uuid not null,
@@ -590,38 +591,38 @@ create index oauth_consents_user_order_idx on {{namespace}}.oauth_consents using
 -- ---------------------------------------------------------------------------------------------
 -- Foreign keys, now that every table exists. Deleting a user deletes what belongs to it.
 
-alter table only {{namespace}}.identities add constraint identities_user_id_fkey foreign key (user_id) references {{namespace}}.users(id) on delete cascade;
-alter table only {{namespace}}.sessions add constraint sessions_user_id_fkey foreign key (user_id) references {{namespace}}.users(id) on delete cascade;
+alter table only {{namespace}}.provider_links add constraint identities_user_id_fkey foreign key (user_id) references {{namespace}}.people(id) on delete cascade;
+alter table only {{namespace}}.sessions add constraint sessions_user_id_fkey foreign key (user_id) references {{namespace}}.people(id) on delete cascade;
 alter table only {{namespace}}.sessions add constraint sessions_oauth_client_id_fkey foreign key (oauth_client_id) references {{namespace}}.oauth_clients(id) on delete cascade;
 alter table only {{namespace}}.refresh_tokens add constraint refresh_tokens_session_id_fkey foreign key (session_id) references {{namespace}}.sessions(id) on delete cascade;
 alter table only {{namespace}}.mfa_amr_claims add constraint mfa_amr_claims_session_id_fkey foreign key (session_id) references {{namespace}}.sessions(id) on delete cascade;
-alter table only {{namespace}}.one_time_tokens add constraint one_time_tokens_user_id_fkey foreign key (user_id) references {{namespace}}.users(id) on delete cascade;
-alter table only {{namespace}}.mfa_factors add constraint mfa_factors_user_id_fkey foreign key (user_id) references {{namespace}}.users(id) on delete cascade;
+alter table only {{namespace}}.one_time_tokens add constraint one_time_tokens_user_id_fkey foreign key (user_id) references {{namespace}}.people(id) on delete cascade;
+alter table only {{namespace}}.mfa_factors add constraint mfa_factors_user_id_fkey foreign key (user_id) references {{namespace}}.people(id) on delete cascade;
 alter table only {{namespace}}.mfa_challenges add constraint mfa_challenges_auth_factor_id_fkey foreign key (factor_id) references {{namespace}}.mfa_factors(id) on delete cascade;
 alter table only {{namespace}}.mfa_recovery_code_sets add constraint mfa_recovery_code_sets_mfa_factor_id_fkey foreign key (mfa_factor_id) references {{namespace}}.mfa_factors(id) on delete cascade;
-alter table only {{namespace}}.mfa_recovery_code_sets add constraint mfa_recovery_code_sets_user_id_fkey foreign key (user_id) references {{namespace}}.users(id) on delete cascade;
+alter table only {{namespace}}.mfa_recovery_code_sets add constraint mfa_recovery_code_sets_user_id_fkey foreign key (user_id) references {{namespace}}.people(id) on delete cascade;
 alter table only {{namespace}}.mfa_recovery_codes add constraint mfa_recovery_codes_mfa_recovery_code_set_id_fkey foreign key (mfa_recovery_code_set_id) references {{namespace}}.mfa_recovery_code_sets(id) on delete cascade;
-alter table only {{namespace}}.webauthn_challenges add constraint webauthn_challenges_user_id_fkey foreign key (user_id) references {{namespace}}.users(id) on delete cascade;
-alter table only {{namespace}}.webauthn_credentials add constraint webauthn_credentials_user_id_fkey foreign key (user_id) references {{namespace}}.users(id) on delete cascade;
+alter table only {{namespace}}.webauthn_challenges add constraint webauthn_challenges_user_id_fkey foreign key (user_id) references {{namespace}}.people(id) on delete cascade;
+alter table only {{namespace}}.webauthn_credentials add constraint webauthn_credentials_user_id_fkey foreign key (user_id) references {{namespace}}.people(id) on delete cascade;
 alter table only {{namespace}}.sso_domains add constraint sso_domains_sso_provider_id_fkey foreign key (sso_provider_id) references {{namespace}}.sso_providers(id) on delete cascade;
 alter table only {{namespace}}.saml_providers add constraint saml_providers_sso_provider_id_fkey foreign key (sso_provider_id) references {{namespace}}.sso_providers(id) on delete cascade;
 alter table only {{namespace}}.saml_relay_states add constraint saml_relay_states_sso_provider_id_fkey foreign key (sso_provider_id) references {{namespace}}.sso_providers(id) on delete cascade;
 alter table only {{namespace}}.saml_relay_states add constraint saml_relay_states_flow_state_id_fkey foreign key (flow_state_id) references {{namespace}}.flow_state(id) on delete cascade;
 alter table only {{namespace}}.scim_tokens add constraint scim_tokens_sso_provider_id_fkey foreign key (sso_provider_id) references {{namespace}}.sso_providers(id) on delete cascade;
 alter table only {{namespace}}.scim_users add constraint scim_users_sso_provider_id_fkey foreign key (sso_provider_id) references {{namespace}}.sso_providers(id) on delete cascade;
-alter table only {{namespace}}.scim_users add constraint scim_users_user_id_fkey foreign key (user_id) references {{namespace}}.users(id) on delete set null;
+alter table only {{namespace}}.scim_users add constraint scim_users_user_id_fkey foreign key (user_id) references {{namespace}}.people(id) on delete set null;
 alter table only {{namespace}}.oauth_authorizations add constraint oauth_authorizations_client_id_fkey foreign key (client_id) references {{namespace}}.oauth_clients(id) on delete cascade;
-alter table only {{namespace}}.oauth_authorizations add constraint oauth_authorizations_user_id_fkey foreign key (user_id) references {{namespace}}.users(id) on delete cascade;
+alter table only {{namespace}}.oauth_authorizations add constraint oauth_authorizations_user_id_fkey foreign key (user_id) references {{namespace}}.people(id) on delete cascade;
 alter table only {{namespace}}.oauth_consents add constraint oauth_consents_client_id_fkey foreign key (client_id) references {{namespace}}.oauth_clients(id) on delete cascade;
-alter table only {{namespace}}.oauth_consents add constraint oauth_consents_user_id_fkey foreign key (user_id) references {{namespace}}.users(id) on delete cascade;
+alter table only {{namespace}}.oauth_consents add constraint oauth_consents_user_id_fkey foreign key (user_id) references {{namespace}}.people(id) on delete cascade;
 
 -- ---------------------------------------------------------------------------------------------
--- Nothing in `auth` is reachable through the data API: every table the API roles could name has
+-- Nothing in `snout_identity` is reachable through the data API: every table the API roles could name has
 -- row-level security on and no policy, and the API roles hold no grant on the schema.
 
 alter table {{namespace}}.audit_log_entries enable row level security;
 alter table {{namespace}}.flow_state enable row level security;
-alter table {{namespace}}.identities enable row level security;
+alter table {{namespace}}.provider_links enable row level security;
 alter table {{namespace}}.instances enable row level security;
 alter table {{namespace}}.mfa_amr_claims enable row level security;
 alter table {{namespace}}.mfa_challenges enable row level security;
@@ -633,18 +634,18 @@ alter table {{namespace}}.saml_relay_states enable row level security;
 alter table {{namespace}}.sessions enable row level security;
 alter table {{namespace}}.sso_domains enable row level security;
 alter table {{namespace}}.sso_providers enable row level security;
-alter table {{namespace}}.users enable row level security;
+alter table {{namespace}}.people enable row level security;
 
 -- The database's own superuser role may read the core tables (as it always could), where it exists.
 do $grants$
 begin
 	if exists (select 1 from pg_roles where rolname = 'postgres') then
 		grant select on
-			{{namespace}}.audit_log_entries, {{namespace}}.flow_state, {{namespace}}.identities,
+			{{namespace}}.audit_log_entries, {{namespace}}.flow_state, {{namespace}}.provider_links,
 			{{namespace}}.instances, {{namespace}}.mfa_amr_claims, {{namespace}}.mfa_challenges,
 			{{namespace}}.mfa_factors, {{namespace}}.one_time_tokens, {{namespace}}.refresh_tokens,
 			{{namespace}}.saml_providers, {{namespace}}.saml_relay_states, {{namespace}}.sessions,
-			{{namespace}}.sso_domains, {{namespace}}.sso_providers, {{namespace}}.users
+			{{namespace}}.sso_domains, {{namespace}}.sso_providers, {{namespace}}.people
 		to postgres with grant option;
 	end if;
 end

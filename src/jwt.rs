@@ -154,6 +154,12 @@ pub fn access_claims(
 	m.insert("phone".into(), json!(phone));
 	m.insert("app_metadata".into(), app_metadata.clone());
 	m.insert("user_metadata".into(), user_metadata.clone());
+	// The same two under the new layout's names, until Phase 8 retires the old ones.
+	for (old, new) in crate::layout::CLAIMS {
+		if let Some(v) = m.get(old).cloned() {
+			m.insert(new.into(), v);
+		}
+	}
 	m.insert("role".into(), json!(role));
 	if !aal.is_empty() {
 		m.insert("aal".into(), json!(aal));
@@ -185,6 +191,33 @@ mod tests {
 		);
 		let expired = sign(&json!({"sub": "x", "exp": 1}), SECRET);
 		assert_eq!(verify(&expired, SECRET).unwrap_err(), JwtError::Expired);
+	}
+
+	#[test]
+	fn an_access_token_carries_both_names_for_its_data() {
+		let c = access_claims(
+			"snoutdata",
+			"x",
+			"authenticated",
+			2,
+			1,
+			"a@b.c",
+			"",
+			&json!({"provider": "email"}),
+			&json!({"name": "Ana"}),
+			"authenticated",
+			"aal1",
+			&json!([]),
+			"",
+			false,
+		);
+		assert_eq!(c["app_metadata"], c["server_data"]);
+		assert_eq!(c["user_metadata"], c["profile_data"]);
+		assert_eq!(c["server_data"]["provider"], "email");
+		assert_eq!(c["profile_data"]["name"], "Ana");
+		// The role and audience are unchanged: the old names stay the default.
+		assert_eq!(c["role"], "authenticated");
+		assert_eq!(c["aud"], "authenticated");
 	}
 
 	#[test]

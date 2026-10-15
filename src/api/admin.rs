@@ -156,13 +156,13 @@ pub async fn list_users(axum::extract::State(app): Shared, req: Req) -> Response
 		let like = format!("%{filter}%");
 		let where_ = "instance_id = '00000000-0000-0000-0000-000000000000' and aud = $1 and ($2 = '' or email like $3 or raw_user_meta_data->>'full_name' ilike $3)";
 		let total: i64 = conn
-			.query_one(&format!("select count(*) from users where {where_}"), &[&aud, &filter, &like])
+			.query_one(&*crate::db::sql(&format!("select count(*) from users where {where_}")), &[&aud, &filter, &like])
 			.await
 			.map_err(db("Database error finding users"))?
 			.get(0);
 		let offset = ((page - 1) * per_page) as i64;
 		let sql = format!("select {} from users where {where_} order by created_at {dir} limit $4 offset $5", user::COLUMNS);
-		let rows = conn.query(&sql, &[&aud, &filter, &like, &(per_page as i64), &offset]).await.map_err(db("Database error finding users"))?;
+		let rows = conn.query(&*crate::db::sql(&sql), &[&aud, &filter, &like, &(per_page as i64), &offset]).await.map_err(db("Database error finding users"))?;
 		let mut users = Vec::with_capacity(rows.len());
 		// The list carries each user without their identities or factors (null), as it always has.
 		for r in &rows {
@@ -579,9 +579,12 @@ pub async fn delete_user(
 				soft_delete(&tx, u).await?;
 			}
 		} else {
-			tx.execute("delete from users where id = $1", &[&u.id])
-				.await
-				.map_err(db("Database error deleting user"))?;
+			tx.execute(
+				&*crate::db::sql("delete from users where id = $1"),
+				&[&u.id],
+			)
+			.await
+			.map_err(db("Database error deleting user"))?;
 		}
 		tx.commit()
 			.await
@@ -656,17 +659,20 @@ async fn soft_delete<C: GenericClient>(tx: &C, mut u: User) -> ApiResult<()> {
 			.map_err(e("Error soft deleting user identities"))?;
 		let hidden = obfuscate(i.user_id, &format!("{}:{}", i.provider, i.provider_id));
 		tx.execute(
-			"update identities set provider_id = $1 where id = $2",
+			&*crate::db::sql("update identities set provider_id = $1 where id = $2"),
 			&[&hidden, &i.id],
 		)
 		.await
 		.map_err(e("Error soft deleting user identities"))?;
 	}
-	tx.execute("delete from mfa_factors where user_id = $1", &[&u.id])
-		.await
-		.map_err(e("Error deleting user's factors"))?;
 	tx.execute(
-		"delete from webauthn_credentials where user_id = $1",
+		&*crate::db::sql("delete from mfa_factors where user_id = $1"),
+		&[&u.id],
+	)
+	.await
+	.map_err(e("Error deleting user's factors"))?;
+	tx.execute(
+		&*crate::db::sql("delete from webauthn_credentials where user_id = $1"),
 		&[&u.id],
 	)
 	.await
@@ -764,7 +770,9 @@ pub async fn update_factor(
 			.map_err(db("Database error updating factor"))?;
 		if !name.is_empty() {
 			tx.execute(
-				"update mfa_factors set friendly_name = $1, updated_at = $2 where id = $3",
+				&*crate::db::sql(
+					"update mfa_factors set friendly_name = $1, updated_at = $2 where id = $3",
+				),
 				&[&name, &crate::json::now(), &f.id],
 			)
 			.await
@@ -1112,13 +1120,13 @@ pub async fn audit_log(axum::extract::State(app): Shared, req: Req) -> Response 
 		}
 		let rows = conn
 			.query(
-				&format!("select id, payload, created_at, ip_address from audit_log_entries where {where_} order by created_at desc limit $2 offset $3"),
+				&*crate::db::sql(&format!("select id, payload, created_at, ip_address from audit_log_entries where {where_} order by created_at desc limit $2 offset $3")),
 				&[&like, &per_page, &((page - 1) * per_page)],
 			)
 			.await
 			.map_err(db("Database error finding audit log entries"))?;
 		let total: i64 = conn
-			.query_one(&format!("select count(*) from audit_log_entries where {where_}"), &[&like])
+			.query_one(&*crate::db::sql(&format!("select count(*) from audit_log_entries where {where_}")), &[&like])
 			.await
 			.map_err(db("Database error finding audit log entries"))?
 			.get(0);

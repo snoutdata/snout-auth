@@ -10,6 +10,7 @@ pub mod dsig;
 pub mod error;
 pub mod json;
 pub mod jwt;
+pub mod layout;
 pub mod mailer;
 pub mod migrate;
 pub mod models;

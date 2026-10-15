@@ -28,6 +28,13 @@ server of the same API are read as they are.
 - **Database tokens**, when switched on: the issuer PostgreSQL 18's `oauth` sign-in talks to, so a
   person opens `psql` with their own identity instead of a shared password. RFC 8628's device grant,
   ES256 tokens from a key of their own, and a database role named by your own SQL function.
+- **Two vocabularies while clients move.** Every route also answers under its new name
+  (`/register`, `/session?via=password|renew|pkce|id_token`, `/sign-off`, `/person`, `/reset`,
+  `/confirm`, `/code`, `/link`, `/provider/start`, `/provider/return`, `/config`,
+  `/second-factors`, `/reconfirm`, `/operator/people`, `/sso/start`), a body may send
+  `profile_data` and `server_data` for `data`/`user_metadata` and `app_metadata`, and every user,
+  session and access token carries both names (`person` beside `user`). A `snout_server` token is
+  an admin as a `service_role` one is. The old names stay the default.
 - **Refuses rather than guesses.** Missing or weak settings stop the server at start and name the
   variable; there is no default signing key.
 

@@ -2,7 +2,8 @@
 //!
 //! Two shapes, chosen by the `X-Api-Version` request header: without it (or with a date before
 //! 2024-01-01) an error is `{"code": <status>, "error_code": ..., "msg": ...}`; from 2024-01-01 it
-//! is `{"code": <error_code>, "message": ...}`. Both carry the error code in `x-sb-error-code`.
+//! is `{"code": <error_code>, "message": ...}`. Both carry the error code in a header, sent under
+//! its old name and its new one (`ERROR_CODE_HEADERS`).
 //! A 5xx never carries the cause: that goes to the log, and the client gets a fixed sentence.
 
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
@@ -10,6 +11,10 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
 pub const API_VERSION_HEADER: &str = "x-api-version";
+
+/// The response header that carries an error's code: the upstream-shaped name clients already read,
+/// and ours (the own layout), both sent until Phase 8.
+pub const ERROR_CODE_HEADERS: [&str; 2] = ["x-sb-error-code", "x-snout-error-code"];
 const VERSION_2024: &str = "2024-01-01";
 
 #[derive(Debug, Clone)]
@@ -196,7 +201,10 @@ impl ApiError {
 		if let Some(code) = error_code_header
 			&& let Ok(v) = HeaderValue::from_str(&code)
 		{
-			response.headers_mut().insert("x-sb-error-code", v);
+			// Under both names until the old one is retired (OWN-LAYOUT Phase 8).
+			for name in ERROR_CODE_HEADERS {
+				response.headers_mut().insert(name, v.clone());
+			}
 		}
 		if dated {
 			response
@@ -272,4 +280,22 @@ pub fn db(message: &str) -> impl Fn(tokio_postgres::Error) -> ApiError + '_ {
 
 pub fn value_or_null(v: Option<Value>) -> Value {
 	v.unwrap_or(Value::Null)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{ApiError, ERROR_CODE_HEADERS};
+	use axum::http::HeaderMap;
+
+	#[test]
+	fn the_error_code_goes_out_under_both_names() {
+		let response = ApiError::bad_request("validation_failed", "no").render(&HeaderMap::new());
+		for name in ERROR_CODE_HEADERS {
+			assert_eq!(
+				response.headers().get(name).and_then(|v| v.to_str().ok()),
+				Some("validation_failed"),
+				"{name}"
+			);
+		}
+	}
 }

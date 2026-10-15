@@ -5,6 +5,10 @@
 //! one of those steps at once, so a fresh database gets it in one transaction and the ledger gets
 //! every version it covers. A database whose ledger already has them all is left alone. A
 //! database part of the way through is refused with a sentence rather than guessed at.
+//!
+//! The file is written in the own layout's names (`people`, `provider_links`, `user_id()`, ...)
+//! around a `{{namespace}}` placeholder. A database in the old layout is given it in that layout's
+//! names (`schema_sql`), statement for statement what it was given before.
 
 use deadpool_postgres::Pool;
 
@@ -153,7 +157,7 @@ pub async fn run(pool: &Pool, namespace: &str) -> Result<(), String> {
 		));
 	}
 
-	tx.batch_execute(&SCHEMA.replace("{{namespace}}", namespace))
+	tx.batch_execute(&schema_sql(namespace))
 		.await
 		.map_err(|e| format!("cannot create the auth schema: {e}"))?;
 	let versions: Vec<String> = BASELINE.iter().map(|v| v.to_string()).collect();
@@ -168,4 +172,132 @@ pub async fn run(pool: &Pool, namespace: &str) -> Result<(), String> {
 		.map_err(|e| format!("cannot create the auth schema: {e}"))?;
 	tracing::info!(namespace, "created the auth schema");
 	Ok(())
+}
+
+/// The schema file for a database whose auth schema is `namespace`: as written for
+/// `snout_identity` (the own layout); for any other, in the old layout's names. A schema of the
+/// operator's own was always given the old names, and still is: the file is spelled back with
+/// its placeholder standing for `auth`, and then each `auth.` it made is the configured schema.
+pub fn schema_sql(namespace: &str) -> String {
+	if namespace == crate::db::NEW_NAMESPACE {
+		return SCHEMA.replace("{{namespace}}", namespace);
+	}
+	let old = crate::db::from_new(&SCHEMA.replace("{{namespace}}", "auth"), false).into_owned();
+	if namespace == "auth" {
+		return old;
+	}
+	// Only a whole `auth.`, never the tail of a longer name.
+	let mut out = String::with_capacity(old.len());
+	let mut rest = old.as_str();
+	while let Some(at) = rest.find("auth.") {
+		let before = rest[..at].bytes().last();
+		out.push_str(&rest[..at]);
+		if before.is_some_and(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'$') {
+			out.push_str("auth.");
+		} else {
+			out.push_str(namespace);
+			out.push('.');
+		}
+		rest = &rest[at + "auth.".len()..];
+	}
+	out.push_str(rest);
+	out
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{SCHEMA, schema_sql};
+	use crate::db::in_layout;
+
+	#[test]
+	fn the_schema_is_made_in_the_names_of_its_layout() {
+		let new = schema_sql("snout_identity");
+		assert_eq!(new, SCHEMA.replace("{{namespace}}", "snout_identity"));
+		for made in [
+			"create table snout_identity.people (",
+			"create table snout_identity.provider_links (",
+			"alter table only snout_identity.people add constraint users_pkey primary key (id);",
+			"references snout_identity.people(id) on delete cascade",
+			"to_regprocedure('snout_identity.user_id()')",
+			"create function snout_identity.user_id() returns uuid",
+			"create function snout_identity.access() returns text",
+			"create function snout_identity.user_email() returns text",
+			"create function snout_identity.claims() returns jsonb",
+			"create table snout_identity.scim_users (",
+			"current_setting('request.jwt.claim.sub', true)",
+			"::jsonb ->> 'role'",
+		] {
+			assert!(new.contains(made), "{made}");
+		}
+		let statements: String = new
+			.lines()
+			.filter(|l| !l.trim_start().starts_with("--"))
+			.collect::<Vec<_>>()
+			.join("\n");
+		for old in [
+			"snout_identity.users",
+			"snout_identity.identities",
+			"snout_identity.uid()",
+			"snout_identity.role()",
+			"snout_identity.email()",
+			"snout_identity.jwt()",
+			"auth.",
+		] {
+			assert!(!statements.contains(old), "{old}");
+		}
+	}
+
+	fn statements(sql: &str) -> String {
+		sql.lines()
+			.filter(|l| !l.trim_start().starts_with("--"))
+			.collect::<Vec<_>>()
+			.join("\n")
+	}
+
+	#[test]
+	fn an_old_database_is_given_the_schema_in_its_names() {
+		let old = statements(&schema_sql("auth"));
+		for made in [
+			"create table auth.users (",
+			"create table auth.identities (",
+			"to_regprocedure('auth.uid()')",
+			"create function auth.uid() returns uuid",
+			"create function auth.role() returns text",
+			"create function auth.email() returns text",
+			"create function auth.jwt() returns jsonb",
+			"references auth.users(id) on delete cascade",
+			"nextval('auth.refresh_tokens_id_seq'::regclass)",
+			"create table auth.scim_users (",
+		] {
+			assert!(old.contains(made), "{made}");
+		}
+		for new in [
+			"snout_identity",
+			"people",
+			"provider_links",
+			"user_id()",
+			"claims()",
+		] {
+			assert!(!old.contains(new), "{new}");
+		}
+		// A schema of the operator's own keeps the old names, as it always had them.
+		let own = statements(&schema_sql("my_auth"));
+		assert_eq!(own, old.replace("auth.", "my_auth."));
+		assert!(own.contains("create table my_auth.users ("));
+		assert!(own.contains("nextval('my_auth.refresh_tokens_id_seq'::regclass)"));
+		// Spelled over again, the old statements are the file's in the new layout.
+		assert_eq!(
+			statements(&in_layout(&old.replace("auth.", "snout_identity."), true)),
+			statements(&SCHEMA.replace("{{namespace}}", "snout_identity"))
+		);
+	}
+
+	#[test]
+	fn the_device_table_points_at_the_people() {
+		let ddl = crate::models::device::DDL.replace("{{namespace}}", "snout_identity");
+		assert!(
+			in_layout(&ddl, true)
+				.contains("references snout_identity.people (id) on delete cascade")
+		);
+	}
 }

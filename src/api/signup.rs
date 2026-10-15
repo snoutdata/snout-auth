@@ -450,9 +450,12 @@ pub async fn remove_unconfirmed_identities<C: deadpool_postgres::GenericClient>(
 		.await
 		.map_err(db("Database error updating user"))?;
 	for other in u.identities.iter().filter(|i| i.id != keep.id) {
-		tx.execute("delete from identities where id = $1", &[&other.id])
-			.await
-			.map_err(db("Database error updating user"))?;
+		tx.execute(
+			&*crate::db::sql("delete from identities where id = $1"),
+			&[&other.id],
+		)
+		.await
+		.map_err(db("Database error updating user"))?;
 	}
 	set_providers(tx, u).await
 }
