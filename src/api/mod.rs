@@ -638,7 +638,8 @@ fn routes(app: Arc<App>) -> Router {
 			.route("/db/device", post(database::device_authorization))
 			.route("/db/token", post(database::token))
 			.route("/db/device/lookup", post(database::lookup))
-			.route("/db/device/approve", post(database::approve));
+			.route("/db/device/approve", post(database::approve))
+			.route("/db/session-token", post(database::session_token));
 	}
 	r.route("/health", get(health))
 		.route("/settings", get(settings))

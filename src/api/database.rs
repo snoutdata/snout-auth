@@ -8,6 +8,7 @@
 //!   POST /db/token                                the device_code grant (RFC 8628 §3.4)
 //!   POST /db/device/lookup                        what a typed code would approve
 //!   POST /db/device/approve                       approve or turn down a typed code
+//!   POST /db/session-token                        a token for the signed-in session itself
 //!
 //! Routed only when `AUTH_DATABASE_TOKENS_ENABLED` is true. Off, every one of these paths answers
 //! exactly what it answered before they existed.
@@ -379,6 +380,19 @@ fn issuable(role: &str, project_ref: &str) -> bool {
 /// and at `aal2` when the account has a second factor: what a database token opens is worth at
 /// least what the account's own sign-in demands.
 async fn approver(app: &App, req: &Req) -> ApiResult<super::Caller> {
+	let caller = signed_in(app, req).await?;
+	if app.db_code_misses.blocked(caller.user.id) {
+		return Err(ApiError::too_many(
+			"over_request_rate_limit",
+			"Too many wrong codes. Wait a few minutes and try again.",
+		));
+	}
+	Ok(caller)
+}
+
+/// A real session (not a service key, not a guest), still valid, and at `aal2` when the account
+/// has a second factor.
+async fn signed_in(app: &App, req: &Req) -> ApiResult<super::Caller> {
 	let caller = super::authenticate(app, req).await?;
 	let Some(sess) = &caller.session else {
 		return Err(ApiError::forbidden(
@@ -410,13 +424,118 @@ async fn approver(app: &App, req: &Req) -> ApiResult<super::Caller> {
 			"Verify your second factor before approving a database sign-in",
 		));
 	}
-	if app.db_code_misses.blocked(caller.user.id) {
-		return Err(ApiError::too_many(
-			"over_request_rate_limit",
-			"Too many wrong codes. Wait a few minutes and try again.",
+	Ok(caller)
+}
+
+// ------------------------------------------------------------------------------------------
+// Door 2 (O4): a token for the session that asks, with no device code.
+
+/// The `client_id` a session-issued token carries, so the audit tells it from a device grant.
+pub const SESSION_CLIENT: &str = "session";
+
+/// A database token for the signed-in person, for one project: what SnoutData Studio and the CLI
+/// put in the password field (door 2, through the front door's `snout_token` user). The device
+/// grant exists because psql has no session to show; a client that is already signed in has
+/// one, and asking that person to type a code into a browser to approve themselves would add a
+/// step and no assurance. The same session rules as an approval (`signed_in`), the same access
+/// seam, the same lifetime, key and audit as a device-grant token.
+pub async fn session_token(State(app): Shared, req: Req) -> Response {
+	let r = for_session(&app, &req).await;
+	no_store(req.respond(r))
+}
+
+async fn for_session(app: &App, req: &Req) -> ApiResult<Response> {
+	super::limit(app, req, &app.limits.database_token)?;
+	let s = settings(app);
+	let caller = signed_in(app, req).await?;
+	let project_ref = req.params()?.str("project_ref")?;
+	if !dbtoken::is_project_ref(&project_ref) {
+		return Err(ApiError::bad_request(
+			"validation_failed",
+			"project_ref is not a project ref",
 		));
 	}
-	Ok(caller)
+	let u = &caller.user;
+	let fail = db("Database error issuing a database token");
+	let mut conn = app.pool.get().await.map_err(super::pool_error)?;
+	let tx = conn.transaction().await.map_err(&fail)?;
+	let role = if u.is_banned() {
+		None
+	} else {
+		device::access_role(&tx, &s.access_function, u.id, &project_ref)
+			.await
+			.map_err(&fail)?
+			.filter(|r| issuable(r, &project_ref))
+	};
+	let Some(role) = role else {
+		let reason = if u.is_banned() {
+			"banned"
+		} else {
+			"no_database_access"
+		};
+		audit(
+			&tx,
+			u,
+			"database_token_refused",
+			req,
+			Some(traits(&[
+				("project_ref", &project_ref),
+				("client_id", SESSION_CLIENT),
+				("reason", reason),
+			])),
+		)
+		.await?;
+		tx.commit().await.map_err(&fail)?;
+		return Err(ApiError::forbidden(
+			"no_database_access",
+			format!(
+				"Your account has no database access to project {project_ref}. Ask the project's owner to give you access."
+			),
+		));
+	};
+	let now = crate::json::now();
+	let jti = Uuid::new_v4().to_string();
+	let id = u.id.to_string();
+	let claims = dbtoken::claims(
+		&dbtoken::Grant {
+			issuer: &s.issuer,
+			user_id: &id,
+			email: &u.email,
+			project_ref: &project_ref,
+			db_role: &role,
+			client_id: SESSION_CLIENT,
+			jti: &jti,
+		},
+		now.unix_timestamp(),
+		s.lifetime,
+	);
+	let token = s
+		.keys
+		.sign(&claims)
+		.map_err(|e| ApiError::internal("Could not sign the database token").with_internal(e))?;
+	audit(
+		&tx,
+		u,
+		"database_token_issued",
+		req,
+		Some(traits(&[
+			("project_ref", &project_ref),
+			("db_role", &role),
+			("client_id", SESSION_CLIENT),
+			("jti", &jti),
+			("kid", s.keys.signing_kid()),
+		])),
+	)
+	.await?;
+	tx.commit().await.map_err(&fail)?;
+	tracing::info!(project_ref = %project_ref, db_role = %role, user = %u.id, jti, "database token issued to a session");
+	Ok(crate::json::ok(&json!({
+		"access_token": token,
+		"token_type": "Bearer",
+		"expires_in": s.lifetime.as_secs(),
+		"db_role": role,
+		"user": dbtoken::TOKEN_USER,
+	})))
 }
 
 /// The typed code, in its stored form. A code that is not even shaped like one is a miss.

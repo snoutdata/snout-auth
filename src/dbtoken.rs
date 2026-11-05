@@ -31,6 +31,11 @@ pub const TOKEN_USE: &str = "db";
 /// line sets it, and libpq passes it on, so the person never types which project they meant.
 pub const SCOPE_PREFIX: &str = "db:";
 
+/// The user name a client logs in as when its PASSWORD is a database token (door 2, O4): the
+/// front door reads the token, logs in as the role it names, and hands the token to the pod's
+/// `OAUTHBEARER` (the proxy's `TOKEN_USER`).
+pub const TOKEN_USER: &str = "snout_token";
+
 // ------------------------------------------------------------------------------------------
 // The signing keys.
 
